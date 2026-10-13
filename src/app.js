@@ -5,7 +5,7 @@ import { markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } fro
 import { createEditor } from './editor.js';
 import { host } from './host.js';
 
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -99,27 +99,159 @@ function updateTitle(){
   $('#fname').textContent = name + (cur.kind === 'scratch' && dirty ? ' (not saved to disk)' : '');
   $('#dirtyDot').textContent = dirty ? '●' : '';
   host.setTitle((dirty ? '• ' : '') + cur.name + ' — Markpad');
+  renderTabs();
 }
 function setDirty(d){
-  dirty = d; updateTitle(); saveDraft();
+  dirty = d; updateTitle(); saveSession();
   clearTimeout(saveTimer);
   if (d && autosave && cur.kind === 'lib') saveTimer = setTimeout(() => save(false, true), 1200);
 }
-function saveDraft(){
-  clearTimeout(draftTimer);
-  draftTimer = setTimeout(() => store.set('draft', JSON.stringify({
-    text: text(), name: cur.name, dirty, kind: cur.kind, path: cur.path || null, lib: cur.kind === 'lib' ? lib?.desc.id : null,
-  })), 300);
-}
-function loadText(t, info){
+// replace the current tab's text (e.g. reloaded from disk)
+function replaceText(t, info){
   loading = true;
-  cur = { kind: 'scratch', name: 'untitled.md', ...info };
+  cur = { ...cur, ...info };
   cm.reset(t.replace(/\r\n?/g, '\n'));
   loading = false;
   setDirty(false); render(); updateCursor(); markTree();
+}
+
+/* ---------------- Tabs ---------------- */
+// Every open note is a tab with its own text, undo history and scroll position.
+// The open tabs (and any unsaved text) are kept between sessions, like Notepad++.
+let tabs = [], active = -1;
+const blankTab = () => ({ cur: { kind: 'scratch', name: 'untitled.md' }, dirty: false, state: cm.newState(''), scroll: 0 });
+function stash(){
+  if (active >= 0 && tabs[active]) Object.assign(tabs[active], { cur, dirty, state: view.state, scroll: view.scrollDOM.scrollTop });
+}
+function useTab(i){
+  active = i;
+  const t = tabs[i];
+  loading = true; cur = t.cur; dirty = t.dirty; cm.swap(t.state); loading = false;
+  requestAnimationFrame(() => { view.scrollDOM.scrollTop = t.scroll || 0; });
+  $('#bFind').setAttribute('aria-pressed', String(searchPanelOpen(view.state)));
   pv.scrollTop = 0;
+  updateTitle(); render(); updateCursor(); markTree(); saveSession();
   if (main.dataset.view !== 'preview') view.focus();
 }
+async function selectTab(i){
+  if (i === active || !tabs[i]) return;
+  await flush();
+  stash(); useTab(i); checkOutside();
+}
+async function findTab(info){
+  for (let i = 0; i < tabs.length; i++){
+    const c = i === active ? cur : tabs[i].cur;
+    if (info.kind === 'lib' && c.kind === 'lib' && c.path === info.path) return i;
+    if (info.kind === 'loose' && c.kind === 'loose' && info.ref && await Promise.resolve(host.sameRef(c.ref, info.ref)).catch(() => false)) return i;
+  }
+  return -1;
+}
+// Open text in a tab: switch to it if that file is already open, reuse an empty untitled tab, or add one.
+async function openInTab(t, info){
+  const k = await findTab(info);
+  if (k >= 0){ await selectTab(k); return; }
+  await flush();
+  stash();
+  const tab = { cur: { kind: 'scratch', name: 'untitled.md', ...info }, dirty: false, state: cm.newState(t.replace(/\r\n?/g, '\n')), scroll: 0 };
+  let i;
+  if (active >= 0 && cur.kind === 'scratch' && !dirty && !view.state.doc.length){ i = active; tabs[i] = tab; }
+  else { i = active + 1; tabs.splice(i, 0, tab); }
+  useTab(i);
+}
+const newTab = () => openInTab('', { kind: 'scratch', name: 'untitled.md' });
+async function closeTab(i){
+  if (!tabs[i]) return;
+  if (i !== active && tabs[i].dirty){ await selectTab(i); i = active; }
+  if (i === active && dirty){
+    if (cur.kind === 'lib' && autosave) await flush();
+    if (dirty){
+      const pick = await ask(`${cur.name} has unsaved changes.`, { buttons: [
+        { label: 'Cancel', value: null }, { label: "Don't save", value: 'drop' }, { label: 'Save', value: 'save', primary: true }] });
+      if (!pick) return;
+      if (pick === 'save'){ await save(false); if (dirty) return; }
+    }
+  }
+  if (i === active){
+    tabs.splice(i, 1); active = -1;
+    if (!tabs.length) tabs.push(blankTab());
+    useTab(Math.min(i, tabs.length - 1));
+  } else {
+    tabs.splice(i, 1);
+    if (i < active) active--;
+    renderTabs(); saveSession();
+  }
+}
+async function closeTabs(keep){ // close every tab where keep(i) is false, right to left
+  for (let i = tabs.length - 1; i >= 0; i--) if (!keep(i)) await closeTab(i);
+}
+function moveTab(from, to){
+  stash();
+  const on = tabs[active], [t] = tabs.splice(from, 1);
+  tabs.splice(to, 0, t);
+  active = tabs.indexOf(on);
+  renderTabs(); saveSession();
+}
+function renderTabs(){
+  const list = $('#tabList');
+  if (!list) return;
+  list.innerHTML = tabs.map((t, i) => {
+    const c = i === active ? cur : t.cur, d = i === active ? dirty : t.dirty;
+    return `<div class="tab${i === active ? ' on' : ''}${d ? ' dirty' : ''}" data-i="${i}" draggable="true" title="${esc(c.kind === 'lib' ? c.path : c.name)}">` +
+      `<span class="nm">${esc(c.name.replace(/\.md$/i, ''))}</span><button class="x" data-x="${i}" title="Close (Ctrl+W)" aria-label="Close tab">×</button></div>`;
+  }).join('');
+  list.querySelector('.tab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+function saveSession(now){
+  clearTimeout(draftTimer);
+  const go = () => {
+    stash();
+    kvSet('session', { active, tabs: tabs.map(t => ({
+      kind: t.cur.kind, name: t.cur.name, path: t.cur.path || null, ref: t.cur.ref || null, mtime: t.cur.mtime || 0,
+      lib: t.cur.kind === 'lib' ? lib?.desc.id : null, dirty: t.dirty,
+      text: t.cur.kind !== 'lib' || t.dirty ? t.state.doc.toString() : null,
+    })) });
+  };
+  if (now) go(); else draftTimer = setTimeout(go, 400);
+}
+const tabList = $('#tabList');
+tabList.addEventListener('click', e => {
+  const x = e.target.closest('.x');
+  if (x){ closeTab(+x.dataset.x); return; }
+  const t = e.target.closest('.tab');
+  if (t) selectTab(+t.dataset.i);
+});
+tabList.addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); });
+tabList.addEventListener('auxclick', e => {
+  const t = e.target.closest('.tab');
+  if (t && e.button === 1){ e.preventDefault(); closeTab(+t.dataset.i); }
+});
+$('#tabbar').addEventListener('dblclick', e => { if (!e.target.closest('.tab')) newTab(); });
+$('#bNewTab').addEventListener('click', newTab);
+tabList.addEventListener('contextmenu', e => {
+  const t = e.target.closest('.tab'); if (!t) return;
+  e.preventDefault();
+  const me = tabs[+t.dataset.i];
+  showCtx(e.clientX, e.clientY, [
+    ['Close', () => closeTab(tabs.indexOf(me))],
+    ['Close others', () => closeTabs(k => tabs[k] === me)],
+    ['Close tabs to the right', () => closeTabs(k => k <= tabs.indexOf(me))],
+  ]);
+});
+let dragTab = -1;
+tabList.addEventListener('dragstart', e => {
+  const t = e.target.closest('.tab'); if (!t) return;
+  dragTab = +t.dataset.i; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/x-markpad-tab', String(dragTab));
+});
+tabList.addEventListener('dragover', e => { if (dragTab >= 0){ e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } });
+tabList.addEventListener('drop', e => {
+  if (dragTab < 0) return;
+  e.preventDefault(); e.stopPropagation();
+  const t = e.target.closest('.tab');
+  const to = t ? +t.dataset.i : tabs.length - 1;
+  if (to !== dragTab) moveTab(dragTab, to);
+  dragTab = -1;
+});
+tabList.addEventListener('dragend', () => { dragTab = -1; });
 
 /* ---------------- Rendering ---------------- */
 function render(){
@@ -220,9 +352,8 @@ async function insertImages(files){
 const imageFiles = dt => [...(dt?.files || [])].filter(f => f.type.startsWith('image/'));
 
 /* ---------------- Files ---------------- */
-const okToDiscard = async () => !dirty || cur.kind === 'lib' && await flush() ||
-  await ask(`${cur.name} has unsaved changes.`, { buttons: [{ label: 'Cancel', value: false }, { label: 'Discard', value: true, primary: true }] });
-async function flush(){ if (cur.kind === 'lib' && dirty) await save(false, true); return !dirty; }
+// with auto-save on, a library note is saved before Markpad moves away from it
+async function flush(){ if (autosave && cur.kind === 'lib' && dirty) await save(false, true); return !dirty; }
 
 async function newNote(){
   if (lib){
@@ -231,13 +362,12 @@ async function newNote(){
     if (name) await createNote(dir, name);
     return;
   }
-  if (await okToDiscard()) loadText('', { kind: 'scratch', name: 'untitled.md' });
+  newTab();
 }
 async function openFile(){
-  if (!(await okToDiscard())) return;
   try {
     const f = await host.openFile();
-    if (f){ loadText(f.text, { kind: f.ref ? 'loose' : 'scratch', name: f.name, ref: f.ref }); addRecent({ name: f.name, ref: f.ref }); }
+    if (f){ await openInTab(f.text, { kind: f.ref ? 'loose' : 'scratch', name: f.name, ref: f.ref }); addRecent({ name: f.name, ref: f.ref }); }
   } catch (e){ if (e.name !== 'AbortError') toast('Could not open: ' + e.message); }
 }
 async function save(saveAs, quiet){
@@ -249,7 +379,7 @@ async function save(saveAs, quiet){
       if (cur.mtime && m && m !== cur.mtime){
         const pick = await ask(`${cur.name} was changed outside Markpad (maybe by Obsidian or sync).`, { buttons: [
           { label: 'Load theirs', value: 'theirs' }, { label: 'Keep mine', value: 'mine', primary: true }] });
-        if (pick === 'theirs'){ await openLibFile(cur.path, true); return; }
+        if (pick === 'theirs'){ replaceText(await lib.fs.read(cur.path), { mtime: m }); return; }
         if (!pick) return;
       }
       await lib.fs.write(cur.path, t);
@@ -263,7 +393,13 @@ async function save(saveAs, quiet){
     }
     if (!saveAs && cur.kind === 'scratch' && lib){
       const name = await ask('Save as a note in ' + lib.desc.name, { input: (titleOf(t) || 'Untitled') });
-      if (name){ const p = await uniquePath(selectedDir(), name.replace(/\.md$/i, '') + '.md'); await lib.fs.write(p, t); await refreshTree(); await openLibFile(p, true); toast('Saved'); }
+      if (name){
+        const p = await uniquePath(selectedDir(), name.replace(/\.md$/i, '') + '.md');
+        await lib.fs.write(p, t);
+        cur = { kind: 'lib', name: basename(p), path: p, mtime: await lib.fs.mtime(p).catch(() => 0) };
+        setDirty(false); await refreshTree(); toast('Saved');
+        addRecent({ name: basename(p), path: p, lib: lib.desc.id, libName: lib.desc.name });
+      }
       return;
     }
     const r = await host.saveAs(cur.name, t);
@@ -312,8 +448,7 @@ $('#recentBox').addEventListener('click', async e => {
       await openLibFile(r.path);
       return;
     }
-    if (!(await okToDiscard())) return;
-    loadText(await host.readRef(r.ref), { kind: 'loose', name: r.name, ref: r.ref }); addRecent(r);
+    await openInTab(await host.readRef(r.ref), { kind: 'loose', name: r.name, ref: r.ref }); addRecent(r);
   } catch (_) {
     toast(`Couldn't open ${r.name}. Was it moved or deleted?`);
     recent = recent.filter(x => x !== r); showRecent(); kvSet('recent', recent);
@@ -344,6 +479,7 @@ function selectedDir(){ return selectedFolder || (cur.kind === 'lib' ? dirname(c
 
 async function openLibrary(desc, quiet){
   if (!(await host.ready(desc, true))) { toast('Markpad needs permission to use ' + desc.name); renderLibEmpty(desc); return false; }
+  if (lib && lib.desc.id !== desc.id) await detachLibTabs();
   lib = { desc, fs: host.lib(desc) };
   expanded = new Set(JSON.parse(store.get('open.' + desc.id) || '[]'));
   libs = [desc, ...libs.filter(l => l.id !== desc.id)].slice(0, 6);
@@ -383,10 +519,18 @@ async function pickLibrary(){
   try { const d = await host.pickLibrary(); if (d) await openLibrary(d); }
   catch (e){ if (e.name !== 'AbortError') toast("Couldn't open that folder: " + (e.message || e)); }
 }
-function closeLibrary(){
+// Leaving a library: its saved notes' tabs close; unsaved ones stay open as untitled text.
+async function detachLibTabs(){
+  await flush();
+  stash();
+  for (const t of tabs) if (t.cur.kind === 'lib' && t.dirty) t.cur = { kind: 'scratch', name: t.cur.name };
+  if (tabs[active]) cur = tabs[active].cur;
+  await closeTabs(k => tabs[k].cur.kind !== 'lib');
+}
+async function closeLibrary(){
+  await detachLibTabs();
   lib = null; tree = []; store.set('lib', '');
-  if (cur.kind === 'lib') cur = { kind: 'scratch', name: cur.name };
-  renderLibEmpty(); updateTitle();
+  renderLibEmpty(); updateTitle(); saveSession();
 }
 function renderTree(){
   renderLibEmpty();
@@ -423,12 +567,14 @@ $('#tree').addEventListener('click', e => {
     if (window.innerWidth <= 700) toggleSide(false);
   }
 });
-async function openLibFile(path, force){
-  if (!force && cur.kind === 'lib' && cur.path === path) return;
-  if (!force && !(await okToDiscard())) return;
+async function openLibFile(path){
   try {
-    const t = await lib.fs.read(path), mtime = await lib.fs.mtime(path).catch(() => 0);
-    loadText(t, { kind: 'lib', name: basename(path), path, mtime });
+    const k = await findTab({ kind: 'lib', path });
+    if (k >= 0) await selectTab(k);
+    else {
+      const t = await lib.fs.read(path), mtime = await lib.fs.mtime(path).catch(() => 0);
+      await openInTab(t, { kind: 'lib', name: basename(path), path, mtime });
+    }
     for (let d = dirname(path); d; d = dirname(d)) expanded.add(d);
     renderTree();
     addRecent({ name: basename(path), path, lib: lib.desc.id, libName: lib.desc.name });
@@ -438,7 +584,7 @@ async function createNote(dir, name){
   const p = await uniquePath(dir, name.replace(/\.md$/i, '').replace(/[\\/:*?"<>|]/g, '-') + '.md');
   await lib.fs.write(p, '');
   await refreshTree();
-  await openLibFile(p, true);
+  await openLibFile(p);
   return p;
 }
 async function openWiki(target){
@@ -512,13 +658,16 @@ async function renamePath(p, isDir){
   if (!isDir && isNote(old) && !isNote(n)) n += old.match(/\.[^.]+$/)[0];
   const to = joinPath(dirname(p), n);
   if (allFiles().some(f => f.path.toLowerCase() === to.toLowerCase()) && to.toLowerCase() !== p.toLowerCase()){ toast(n + ' already exists'); return; }
-  if (cur.kind === 'lib' && (cur.path === p || cur.path.startsWith(p + '/'))) await flush();
+  const inside = c => c.kind === 'lib' && (c.path === p || c.path.startsWith(p + '/'));
+  if (inside(cur)) await flush();
   try {
     await lib.fs.rename(p, to);
-    if (cur.kind === 'lib' && (cur.path === p || cur.path.startsWith(p + '/'))){
-      cur.path = to + cur.path.slice(p.length); cur.name = basename(cur.path);
-      cur.mtime = await lib.fs.mtime(cur.path).catch(() => 0); updateTitle();
+    stash();
+    for (const t of tabs) if (inside(t.cur)){
+      t.cur.path = to + t.cur.path.slice(p.length); t.cur.name = basename(t.cur.path);
+      t.cur.mtime = await lib.fs.mtime(t.cur.path).catch(() => 0);
     }
+    updateTitle(); saveSession();
     if (expanded.delete(p)) expanded.add(to);
     await refreshTree();
   } catch (e){ toast("Couldn't rename: " + (e.message || e)); }
@@ -526,7 +675,11 @@ async function renamePath(p, isDir){
 async function trashPath(p, isDir){
   if (!(await confirmBox(`Move ${basename(p)}${isDir ? ' and everything in it' : ''} to the library's .trash folder?`, 'Move to trash'))) return;
   try {
-    if (cur.kind === 'lib' && (cur.path === p || cur.path.startsWith(p + '/'))){ dirty = false; loadText('', { kind: 'scratch', name: 'untitled.md' }); }
+    stash();
+    const gone = t => t.cur.kind === 'lib' && (t.cur.path === p || t.cur.path.startsWith(p + '/'));
+    for (const t of tabs) if (gone(t)) t.dirty = false;
+    if (active >= 0 && gone(tabs[active])) dirty = false;
+    await closeTabs(k => !gone(tabs[k]));
     await lib.fs.trash(p);
     await refreshTree(); toast('Moved to .trash');
   } catch (e){ toast("Couldn't delete: " + (e.message || e)); }
@@ -863,11 +1016,11 @@ async function onDropFiles(e){
   if (imgs.length && imgs.length === all.length){ insertImages(imgs); return true; }
   const item = e.dataTransfer.items && e.dataTransfer.items[0], file = all[0];
   const handleP = item ? host.dropHandle(item) : null;
-  if (!file || !(await okToDiscard())) return true;
+  if (!file) return true;
   let handle = null;
   try { handle = handleP ? await handleP : null; } catch (_) {}
   if (handle && handle.kind !== 'file') handle = null;
-  loadText(await file.text(), { kind: handle ? 'loose' : 'scratch', name: file.name, ref: handle });
+  await openInTab(await file.text(), { kind: handle ? 'loose' : 'scratch', name: file.name, ref: handle });
   if (handle) addRecent({ name: file.name, ref: handle });
   return true;
 }
@@ -938,6 +1091,13 @@ $('#bAutosave').addEventListener('click', () => {
   toast(autosave ? 'Library notes save as you type' : 'Library notes save with Ctrl+S');
   if (autosave && dirty && cur.kind === 'lib') save(false, true);
 });
+// Readable line length (Obsidian's name): on keeps a comfortable column, off fills the window
+function setReadable(on){
+  document.body.classList.toggle('readable', on); store.set('readable', on ? '1' : '');
+  $('#bReadable').setAttribute('aria-pressed', String(on));
+}
+setReadable(!!store.get('readable'));
+$('#bReadable').addEventListener('click', () => { setReadable(!document.body.classList.contains('readable')); syncScroll('ed'); });
 $('#aboutLine').textContent = `Markpad ${VERSION} · ${host.kind === 'browser' ? 'web' : host.kind}`;
 
 document.addEventListener('keydown', e => {
@@ -959,6 +1119,14 @@ document.addEventListener('keydown', e => {
   else if (k === 'o'){ e.preventDefault(); openFile(); }
   else if (k === 'p'){ e.preventDefault(); openSwitcher(); }
   else if (k === 'n'){ e.preventDefault(); newNote(); }
+  else if (k === 't'){ e.preventDefault(); newTab(); }
+  else if (k === 'w'){ e.preventDefault(); closeTab(active); }
+  else if (k === 'tab' || k === 'pagedown' || k === 'pageup'){
+    e.preventDefault();
+    const back = k === 'pageup' || (k === 'tab' && e.shiftKey);
+    selectTab((active + (back ? tabs.length - 1 : 1)) % tabs.length);
+  }
+  else if (/^[1-9]$/.test(k) && !e.shiftKey){ e.preventDefault(); selectTab(k === '9' ? tabs.length - 1 : +k - 1); }
   else if (k === '\\' || e.code === 'Backslash'){ e.preventDefault(); toggleSide(); }
   else if (k === 's'){ e.preventDefault(); save(e.shiftKey); }
   else if (k === '/' || e.code === 'Slash'){
@@ -974,20 +1142,18 @@ async function checkOutside(){
   const m = await lib.fs.mtime(cur.path).catch(() => 0);
   if (!m || m === cur.mtime) return;
   if (!dirty){
-    const keep = sel().head, t = await lib.fs.read(cur.path);
-    cm.reset(t); cur.mtime = m;
-    view.dispatch({ selection: { anchor: Math.min(keep, t.length) } });
-    render(); toast('Reloaded: changed outside Markpad');
+    const keep = sel().head, top = view.scrollDOM.scrollTop, t = await lib.fs.read(cur.path);
+    replaceText(t, { mtime: m });
+    view.dispatch({ selection: { anchor: Math.min(keep, view.state.doc.length) } });
+    view.scrollDOM.scrollTop = top;
+    toast('Reloaded: changed outside Markpad');
   } else save(false, true);
 }
 window.addEventListener('focus', () => { checkOutside(); if (lib) refreshTree(); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
-window.addEventListener('beforeunload', e => { if (dirty && (cur.kind === 'loose' || cur.kind === 'lib' && !autosave)){ e.preventDefault(); e.returnValue = ''; } });
-host.onClose(async () => {
-  if (cur.kind === 'lib') await flush();
-  if (!dirty || cur.kind === 'scratch') return true;
-  return await ask(`${cur.name} has unsaved changes.`, { buttons: [{ label: 'Cancel', value: false }, { label: 'Close without saving', value: true, primary: true }] });
-});
+document.addEventListener('visibilitychange', () => { if (document.hidden){ flush(); saveSession(true); } });
+window.addEventListener('pagehide', () => saveSession(true));
+// Closing never loses anything: unsaved tabs come back next time (like Notepad++).
+host.onClose(async () => { await flush(); saveSession(true); await new Promise(r => setTimeout(r, 150)); return true; });
 
 /* ---------------- Boot ---------------- */
 cm = createEditor(pane, {
@@ -999,7 +1165,7 @@ cm = createEditor(pane, {
   openLink,
   openWiki,
   onUpdate(u){
-    if (u.docChanged && !loading){ scrollSrc = 'ed'; if (!dirty) setDirty(true); else { saveDraft(); if (autosave && cur.kind === 'lib'){ clearTimeout(saveTimer); saveTimer = setTimeout(() => save(false, true), 1200); } } scheduleRender(); }
+    if (u.docChanged && !loading){ scrollSrc = 'ed'; if (!dirty) setDirty(true); else { saveSession(); if (autosave && cur.kind === 'lib'){ clearTimeout(saveTimer); saveTimer = setTimeout(() => save(false, true), 1200); } } scheduleRender(); }
     if (u.selectionSet || u.docChanged) updateCursor();
     if ((u.docChanged || u.selectionSet) && searchPanelOpen(u.state)) updateCount();
   },
@@ -1019,13 +1185,13 @@ if (host.onDropPaths) host.onDropPaths(async paths => {
   const imgs = paths.filter(p => IMG_EXT.test(p));
   if (imgs.length && imgs.length === paths.length){ insertImages(await Promise.all(imgs.map(p => host.readFileAsFile(p)))); return; }
   const p = paths.find(x => !IMG_EXT.test(x));
-  if (!p || !(await okToDiscard())) return;
+  if (!p) return;
   try {
     const name = p.split(/[\\/]/).pop();
-    loadText(await host.readRef(p), { kind: 'loose', name, ref: p }); addRecent({ name, ref: p });
+    await openInTab(await host.readRef(p), { kind: 'loose', name, ref: p }); addRecent({ name, ref: p });
   } catch (e){ toast('Could not open: ' + (e.message || e)); }
 });
-if (host.onOpenFile) host.onOpenFile(async f => { if (await okToDiscard()){ loadText(f.text, { kind: 'loose', name: f.name, ref: f.ref }); addRecent({ name: f.name, ref: f.ref }); } });
+if (host.onOpenFile) host.onOpenFile(async f => { await openInTab(f.text, { kind: 'loose', name: f.name, ref: f.ref }); addRecent({ name: f.name, ref: f.ref }); });
 
 (async () => {
   recent = (await kvGet('recent')) || []; showRecent();
@@ -1038,21 +1204,31 @@ if (host.onOpenFile) host.onOpenFile(async f => { if (await okToDiscard()){ load
   else if (want) await openLibrary(want, true);
   else renderLibEmpty();
 
-  let draft = null;
-  try { draft = JSON.parse(store.get('draft') || 'null'); } catch (_) {}
-  const start = await host.startupFile().catch(() => null);
-  if (start){
-    loadText(start.text, { kind: 'loose', name: start.name, ref: start.ref }); addRecent({ name: start.name, ref: start.ref });
-  } else if (draft && draft.kind === 'lib' && lib && draft.lib === lib.desc.id && draft.path){
-    await openLibFile(draft.path, true);
-    if (draft.dirty && draft.text !== text()){ view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: draft.text } }); }
-  } else if (draft && typeof draft.text === 'string'){
-    const r = draft.kind === 'loose' ? recent.find(x => x.ref && x.name === draft.name) : null;
-    loadText(draft.text, r ? { kind: 'loose', name: draft.name, ref: r.ref } : { kind: 'scratch', name: draft.name || 'untitled.md' });
-    if (draft.dirty) setDirty(true);
-  } else {
-    loadText($('#welcome').textContent.replace(/^\n/, ''), { kind: 'scratch', name: 'welcome.md' });
+  // bring back last session's tabs
+  const sess = await kvGet('session');
+  for (const s of sess?.tabs || []){
+    let t = s.text, info = { kind: s.kind, name: s.name, path: s.path, ref: s.ref, mtime: s.mtime };
+    if (s.kind === 'lib'){
+      if (!lib || s.lib !== lib.desc.id){ if (t == null) continue; info = { kind: 'scratch', name: s.name }; }
+      else if (!s.dirty){
+        try { t = await lib.fs.read(s.path); info.mtime = await lib.fs.mtime(s.path).catch(() => 0); } catch (_) { continue; }
+      }
+    } else if (s.kind === 'loose' && !s.dirty && host.kind !== 'browser'){
+      try { t = await host.readRef(s.ref); } catch (_) {}   // the file may have changed since
+    }
+    if (t == null) continue;
+    tabs.push({ cur: info, dirty: !!s.dirty, state: cm.newState(t), scroll: 0 });
   }
+  if (!tabs.length){
+    let draft = null;   // Markpad 2.0 kept one draft instead of tabs
+    try { draft = JSON.parse(store.get('draft') || 'null'); } catch (_) {}
+    tabs.push(draft && typeof draft.text === 'string'
+      ? { cur: { kind: 'scratch', name: draft.name || 'untitled.md' }, dirty: !!draft.dirty, state: cm.newState(draft.text), scroll: 0 }
+      : { cur: { kind: 'scratch', name: 'welcome.md' }, dirty: false, state: cm.newState($('#welcome').textContent.replace(/^\n/, '')), scroll: 0 });
+  }
+  useTab(Math.min(Math.max(sess?.active ?? 0, 0), tabs.length - 1));
+  const start = await host.startupFile().catch(() => null);
+  if (start){ await openInTab(start.text, { kind: 'loose', name: start.name, ref: start.ref }); addRecent({ name: start.name, ref: start.ref }); }
   updateCursor();
   view.focus();
 })();
@@ -1070,4 +1246,5 @@ window.__mpBack = () => {
 };
 
 // for the automated tests
-window.__markpad = { get view(){ return view; }, get cur(){ return cur; }, get lib(){ return lib; }, openLibrary, openLibFile, setView, insertImages, toggleSide, showTab };
+window.__markpad = { get view(){ return view; }, get cur(){ return cur; }, get lib(){ return lib; }, get tabs(){ return tabs; }, get active(){ return active; },
+  openLibrary, openLibFile, setView, insertImages, toggleSide, showTab, openInTab, selectTab, closeTab, newTab };

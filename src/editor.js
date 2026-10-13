@@ -300,9 +300,12 @@ export function createEditor(parent, opts){
       view.dom.classList.toggle('cm-live', on);
     },
     // a new document gets a fresh undo history
-    reset(text){
-      view.setState(EditorState.create({ doc: text, extensions }));
-      if (liveOn) ed.setLive(true);
+    reset(text){ ed.swap(ed.newState(text)); },
+    // tabs: each tab keeps its own state (text, undo history, selection) and swaps it in
+    newState: text => EditorState.create({ doc: text, extensions }),
+    swap(state){
+      view.setState(state);
+      ed.setLive(liveOn);
     },
   };
   return ed;
