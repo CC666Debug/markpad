@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,interactive-widget=resizes-content">
+<title>Markpad</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233b6fd8'/%3E%3Cpath d='M7 22V10h3l3 4 3-4h3v12h-3v-7l-3 4-3-4v7zM22 17h2v-7h2v7h2l-3 4z' fill='white'/%3E%3C/svg%3E">
+<style id="tokens">
+:root{
+  --bg:#fbfbfa; --panel:#f3f2ef; --text:#1f2328; --muted:#6b6f76; --border:#e2e0db;
+  --accent:#3b6fd8; --code-bg:#efede8; --hover:#e7e5df; --mark:#fff1a8; --quote:#d6d3cc;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#1b1c1f; --panel:#232428; --text:#e6e6e3; --muted:#9a9ca3; --border:#34363b;
+    --accent:#7aa2f7; --code-bg:#2a2c31; --hover:#2e3035; --mark:#6b5a12; --quote:#45474d;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#1b1c1f; --panel:#232428; --text:#e6e6e3; --muted:#9a9ca3; --border:#34363b;
+  --accent:#7aa2f7; --code-bg:#2a2c31; --hover:#2e3035; --mark:#6b5a12; --quote:#45474d;
+  color-scheme:dark;
+}
+</style>
+<style>
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
+header{display:flex;align-items:center;gap:2px;padding:6px 10px;border-bottom:1px solid var(--border);background:var(--panel);overflow-x:auto;scrollbar-width:none;flex:none}
+header::-webkit-scrollbar{display:none}
+.brand{font-weight:650;margin-right:10px;display:flex;align-items:center;gap:7px;white-space:nowrap;letter-spacing:-.01em}
+.brand img{width:20px;height:20px}
+.sep{width:1px;height:20px;background:var(--border);margin:0 6px;flex:none}
+.spacer{flex:1;min-width:8px}
+button{font:inherit;color:inherit;background:none;border:1px solid transparent;border-radius:6px;height:30px;min-width:30px;padding:0 8px;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;gap:5px;flex:none}
+button:hover{background:var(--hover)}
+button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+button[aria-pressed="true"].tog{background:var(--hover);color:var(--accent)}
+.fmt button{font-size:13px;padding:0 6px;color:var(--muted)}
+.fmt button:hover{color:var(--text)}
+.fmt{display:flex;gap:1px;flex:none}
+.seg{display:flex;border:1px solid var(--border);border-radius:8px;padding:2px;gap:2px;flex:none;background:var(--panel)}
+.seg button{height:24px;font-size:12.5px;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--bg);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+details.menu{position:relative;flex:none}
+details.menu summary{list-style:none;height:30px;padding:0 8px;border-radius:6px;display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap}
+details.menu summary::-webkit-details-marker{display:none}
+details.menu summary:hover{background:var(--hover)}
+.menu-list,.ctx{position:fixed;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.14);z-index:20;min-width:190px;display:flex;flex-direction:column}
+.menu-list{margin-top:4px}
+.menu-list button,.ctx button{justify-content:flex-start;width:100%}
+.menu-list .sub{font-size:11.5px;color:var(--muted);padding:6px 8px 2px;border-top:1px solid var(--border);margin-top:4px}
+.menu-list .recent{max-width:280px;overflow:hidden;text-overflow:ellipsis;display:block;text-align:left;line-height:30px}
+.menu-list .key{margin-left:auto;color:var(--muted);font-size:12px;padding-left:12px}
+.ctx[hidden]{display:none}
+
+/* find bar (lives inside the editor as a CodeMirror panel) */
+#findBar{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:5px 10px;border-bottom:1px solid var(--border);background:var(--panel)}
+#findBar input{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--border);border-radius:6px;height:28px;padding:0 8px;width:200px;outline:0}
+#findBar input:focus{border-color:var(--accent)}
+#findBar button{height:28px;font-size:12.5px}
+#findBar .opt{font:12px ui-monospace,Consolas,monospace;color:var(--muted)}
+#fCount{font-size:12px;color:var(--muted);min-width:70px;padding:0 4px}
+#fCount.none{color:#d4553f}
+#findBar .rep{display:none;align-items:center;gap:4px}
+#findBar.rep-on .rep{display:flex}
+
+main{flex:1;display:flex;min-height:0;position:relative}
+
+/* sidebar: Files + Outline */
+#side{flex:0 0 250px;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--panel);min-width:0;font-size:13px}
+#side[hidden]{display:none}
+.tabs{display:flex;gap:2px;padding:6px 6px 0;flex:none}
+.tabs button{flex:1;height:28px;font-size:12px;color:var(--muted);border-radius:6px 6px 0 0;font-weight:600;letter-spacing:.03em;text-transform:uppercase}
+.tabs button[aria-selected="true"]{color:var(--text);background:var(--bg)}
+.pane{flex:1;overflow:auto;padding:6px 6px 40px;background:var(--bg);border-top:1px solid var(--border);margin-top:-1px}
+.pane[hidden]{display:none}
+.libhead{display:flex;align-items:center;gap:2px;padding:2px 2px 6px 6px;font-weight:600}
+.libhead .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.libhead button{min-width:26px;height:26px;padding:0 4px;color:var(--muted)}
+.libhead button:hover{color:var(--text)}
+#tree .row{display:flex;align-items:center;gap:4px;width:100%;height:26px;justify-content:flex-start;padding:0 6px;color:var(--muted);border-radius:5px;font-size:13px}
+#tree .row:hover{color:var(--text)}
+#tree .row.on{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+#tree .row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tree .row .car{width:12px;flex:none;font-size:10px;transition:transform .12s;display:inline-block}
+#tree .row.open .car{transform:rotate(90deg)}
+#tree .row.dir{color:var(--text)}
+#tree .row.img .nm{font-style:italic}
+.libempty{padding:10px 8px;color:var(--muted);line-height:1.5}
+.libempty button{display:flex;width:100%;justify-content:flex-start;margin-top:6px;border:1px solid var(--border);height:auto;min-height:34px;padding:6px 10px;color:var(--text);white-space:normal;text-align:left}
+#olList button{display:block;width:100%;height:auto;min-height:26px;text-align:left;padding:4px 8px;color:var(--muted);white-space:normal;line-height:1.3;border-radius:5px}
+#olList button:hover{color:var(--text)}
+#olList button.on{color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.empty{color:var(--muted);padding:4px 8px;font-size:12.5px}
+
+#editPane{flex:0 0 50%;min-width:0;display:flex;flex-direction:column;position:relative;background:var(--bg)}
+#editPane .cm-editor{flex:1;min-height:0;outline:0!important}
+#divider{flex:none;width:6px;cursor:col-resize;border-left:1px solid var(--border);background:var(--bg);touch-action:none}
+#divider:hover,#divider.drag{background:color-mix(in srgb,var(--accent) 25%,transparent)}
+#preview{flex:1;overflow:auto;min-width:0;padding:28px 36px 80px;position:relative}
+main:is([data-view="editor"],[data-view="live"]) #preview,main:is([data-view="editor"],[data-view="live"]) #divider{display:none}
+main:is([data-view="editor"],[data-view="live"]) #editPane{flex:1 1 auto!important}
+main[data-view="preview"] #editPane,main[data-view="preview"] #divider{display:none}
+
+/* CodeMirror look */
+.cm-editor{background:var(--bg);color:var(--text);height:100%}
+.cm-scroller{font:15px/1.65 ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,monospace!important}
+.cm-content{padding:24px 0 40vh!important;caret-color:var(--accent)}
+.cm-line{padding:0 28px!important}
+main:is([data-view="editor"],[data-view="live"]) .cm-content{max-width:820px;margin:0 auto}
+.cm-cursor{border-left:2px solid var(--accent)!important}
+.cm-selectionBackground{background:color-mix(in srgb,var(--accent) 22%,transparent)!important}
+.cm-focused .cm-selectionBackground{background:color-mix(in srgb,var(--accent) 30%,transparent)!important}
+.cm-mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace}
+.cm-panels{background:var(--panel)!important;color:var(--text)!important;border:0!important}
+.cm-panels-top{border-bottom:0!important}
+.cm-searchMatch{background:color-mix(in srgb,var(--mark) 75%,transparent);border-radius:2px}
+.cm-searchMatch-selected{background:color-mix(in srgb,var(--accent) 40%,transparent)}
+/* Live Preview */
+.cm-live .cm-scroller{font:16px/1.7 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif!important}
+.cm-live .cm-lp-h1{font-size:2em;font-weight:650;line-height:1.3}
+.cm-live .cm-lp-h2{font-size:1.5em;font-weight:650;line-height:1.35}
+.cm-live .cm-lp-h3{font-size:1.25em;font-weight:650}
+.cm-live .cm-lp-h4{font-size:1.05em;font-weight:650}
+.cm-live .cm-lp-h5,.cm-live .cm-lp-h6{font-size:.95em;font-weight:650;color:var(--muted)}
+.cm-live .cm-lp-h1,.cm-live .cm-lp-h2{padding-top:.35em!important}
+.cm-lp-icode{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:.88em;background:var(--code-bg);border-radius:4px;padding:.1em .3em}
+.cm-live .cm-lp-code{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:.88em;background:var(--code-bg)}
+.cm-live .cm-lp-quote{border-left:4px solid var(--quote);color:var(--muted)}
+.cm-lp-link{color:var(--accent);cursor:pointer;text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--accent) 40%,transparent);text-underline-offset:3px}
+.cm-lp-bullet{display:inline-block;width:1.1em;color:var(--muted);font-weight:700}
+.cm-lp-task{margin:0 .45em 0 0;vertical-align:-.1em;accent-color:var(--accent);cursor:pointer;width:1em;height:1em}
+.cm-lp-hr{display:inline-block;width:100%;border-top:1px solid var(--border);vertical-align:middle}
+.cm-lp-img{display:block;padding:4px 0}
+.cm-lp-img img{max-width:100%;max-height:70vh;border-radius:6px;display:block}
+.cm-lp-img.broken{color:var(--muted);font-style:italic;font-size:.9em}
+.cm-lp-table{padding:6px 0;cursor:text;font-size:15px}
+.cm-lp-table table{margin:0}
+.cm-lp-data{color:var(--muted);font-style:italic;font-size:.85em;border:1px solid var(--border);border-radius:4px;padding:0 6px}
+
+footer{flex:none;display:flex;gap:16px;padding:4px 12px;font-size:12px;color:var(--muted);border-top:1px solid var(--border);background:var(--panel);white-space:nowrap;overflow:hidden}
+footer .grow{flex:1;overflow:hidden;text-overflow:ellipsis}
+#dirtyDot{color:var(--accent)}
+#toast{position:fixed;left:50%;bottom:40px;transform:translateX(-50%) translateY(10px);background:var(--text);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;opacity:0;pointer-events:none;transition:.18s;z-index:60}
+#toast.show{opacity:1;transform:translateX(-50%)}
+#dropHint{position:fixed;inset:10px;border:2px dashed var(--accent);border-radius:12px;background:color-mix(in srgb,var(--bg) 85%,transparent);display:none;align-items:center;justify-content:center;font-size:18px;color:var(--accent);z-index:40;pointer-events:none}
+body.dragging #dropHint{display:flex}
+
+/* dialogs */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:flex-start;justify-content:center;padding-top:14vh;z-index:50}
+.modal[hidden]{display:none}
+.modal .box{background:var(--bg);border:1px solid var(--border);border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.3);width:min(480px,92vw);padding:16px;display:flex;flex-direction:column;gap:12px}
+.modal p{margin:0;line-height:1.5;white-space:pre-line}
+.modal input{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--border);border-radius:6px;height:34px;padding:0 10px;outline:0;width:100%}
+.modal input:focus{border-color:var(--accent)}
+.modal .btns{display:flex;justify-content:flex-end;gap:6px}
+.modal .btns button{border:1px solid var(--border);padding:0 14px}
+.modal .btns button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+#qsList{max-height:50vh;overflow:auto;display:flex;flex-direction:column}
+#qsList button{justify-content:flex-start;height:auto;min-height:32px;padding:4px 10px;flex-direction:column;align-items:flex-start;gap:0;text-align:left;white-space:normal}
+#qsList button small{color:var(--muted);font-size:11.5px}
+#qsList button.on{background:var(--hover)}
+
+#focusExit{position:fixed;top:10px;right:14px;z-index:25;display:none;opacity:.25;color:var(--muted)}
+#focusExit:hover{opacity:1}
+body.focus #focusExit{display:inline-flex}
+body.focus header,body.focus footer,body.focus #side,body.focus #preview,body.focus #divider{display:none!important}
+body.focus #editPane{display:flex!important;flex:1 1 auto!important}
+body.focus .cm-content{max-width:760px;margin:0 auto;padding-top:12vh!important}
+body.focus .cm-scroller{font-size:17px!important}
+
+@media (max-width:700px){
+  main[data-view="split"]{flex-direction:column}
+  main[data-view="split"] #editPane{flex:1 1 50%!important;border-bottom:1px solid var(--border)}
+  #divider{display:none!important}
+  .cm-line{padding:0 16px!important}
+  .cm-content{padding-top:16px!important}
+  #preview{padding:16px 16px 60px}
+  #side{position:absolute;top:0;bottom:0;left:0;width:min(300px,86vw);z-index:15;box-shadow:0 8px 24px rgba(0,0,0,.2)}
+  #findBar input{width:140px}
+  .lbl,.brand span,.hide-sm{display:none}
+}
+@media print{
+  header,footer,#editPane,#divider,#toast,#side,#focusExit,.modal{display:none!important}
+  body{height:auto;overflow:visible;display:block;background:#fff}
+  main{display:block}
+  #preview{display:block!important;overflow:visible;padding:0}
+}
+</style>
+<style id="mdcss">
+.md{max-width:760px;margin:0 auto;font:16px/1.7 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--text);word-wrap:break-word}
+.md>:first-child{margin-top:0}
+.md h1,.md h2,.md h3,.md h4,.md h5,.md h6{line-height:1.25;margin:1.6em 0 .6em;font-weight:650;letter-spacing:-.01em}
+.md h1{font-size:2em;padding-bottom:.3em;border-bottom:1px solid var(--border)}
+.md h2{font-size:1.5em;padding-bottom:.25em;border-bottom:1px solid var(--border)}
+.md h3{font-size:1.25em}.md h4{font-size:1.05em}.md h5,.md h6{font-size:.95em;color:var(--muted)}
+.md p,.md ul,.md ol,.md blockquote,.md pre,.md .table-wrap{margin:0 0 1em}
+.md a{color:var(--accent);text-decoration:none}.md a:hover{text-decoration:underline}
+.md a.wikilink.missing{opacity:.65}
+.md code{font:.88em ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,monospace;background:var(--code-bg);padding:.15em .4em;border-radius:5px}
+.md pre{background:var(--code-bg);padding:14px 16px;border-radius:8px;overflow:auto;line-height:1.5}
+.md pre code{background:none;padding:0;font-size:.86em}
+.md blockquote{margin-left:0;padding:0 1em;color:var(--muted);border-left:4px solid var(--quote)}
+.md ul,.md ol{padding-left:1.8em}.md li+li{margin-top:.2em}.md li>ul,.md li>ol{margin:.2em 0 0}
+.md ul.contains-task{list-style:none;padding-left:1.2em}
+.md li.task-item>input{margin:0 .45em 0 -1.2em;vertical-align:-.1em;cursor:pointer;accent-color:var(--accent)}
+.md hr{border:0;border-top:1px solid var(--border);margin:2em 0}
+.md img{max-width:100%;border-radius:6px}
+.md mark{background:var(--mark);color:inherit;padding:0 .15em;border-radius:3px}
+.md .table-wrap{overflow-x:auto}
+.md table{border-collapse:collapse;font-size:.95em}
+.md th,.md td{border:1px solid var(--border);padding:6px 12px}
+.md th{background:var(--panel);font-weight:600}
+</style>
+</head>
+<body>
+<header>
+  <button id="bSide" class="tog" aria-pressed="false" title="Sidebar: files and outline (Ctrl+\)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></button>
+  <div class="brand" id="brand"><img alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233b6fd8'/%3E%3Cpath d='M7 22V10h3l3 4 3-4h3v12h-3v-7l-3 4-3-4v7zM22 17h2v-7h2v7h2l-3 4z' fill='white'/%3E%3C/svg%3E"><span>Markpad</span></div>
+  <button id="bNew" title="New note (Ctrl+N)"><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M12 12v6M9 15h6"/></svg><span class="lbl">New</span></button>
+  <button id="bOpen" title="Open a file (Ctrl+O)"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="lbl">Open</span></button>
+  <button id="bSave" title="Save (Ctrl+S)"><svg viewBox="0 0 24 24"><path d="M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8V3M7 21v-7h10v7"/></svg><span class="lbl">Save</span></button>
+  <details class="menu" id="moreMenu">
+    <summary title="More"><svg viewBox="0 0 24 24" width="16" height="16" style="stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round"><path d="M6 9l6 6 6-6"/></svg></summary>
+    <div class="menu-list">
+      <button id="bSaveAs">Save as…<span class="key">Ctrl+Shift+S</span></button>
+      <button id="bSwitcher">Quick open…<span class="key">Ctrl+P</span></button>
+      <button id="bExport">Export as HTML</button>
+      <button id="bPrint">Print / Save as PDF</button>
+      <button id="bAutosave" class="tog" aria-pressed="true">Auto-save library notes</button>
+      <div id="recentBox"></div>
+      <div class="sub" id="aboutLine"></div>
+    </div>
+  </details>
+  <div class="sep"></div>
+  <div class="fmt">
+    <button data-f="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+    <button data-f="italic" title="Italic (Ctrl+I)"><i style="font-family:Georgia,serif">I</i></button>
+    <button data-f="strike" title="Strikethrough"><s>S</s></button>
+    <button data-f="heading" title="Heading (cycles H1–H6)"><b>H</b></button>
+    <button data-f="quote" title="Quote">❝</button>
+    <button data-f="ul" title="Bulleted list">•≡</button>
+    <button data-f="ol" title="Numbered list">1.</button>
+    <button data-f="task" title="Task list">☑</button>
+    <button data-f="code" title="Code">&lt;/&gt;</button>
+    <button data-f="link" title="Link (Ctrl+K)">🔗</button>
+    <button data-f="image" title="Image" class="hide-sm">🖼</button>
+    <button data-f="table" title="Table" class="hide-sm">▦</button>
+    <button data-f="hr" title="Divider" class="hide-sm">―</button>
+  </div>
+  <div class="spacer"></div>
+  <button id="bFind" class="tog" aria-pressed="false" title="Find and replace (Ctrl+F / Ctrl+H)"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg></button>
+  <button id="bFocus" title="Focus mode (Ctrl+Shift+F)"><svg viewBox="0 0 24 24"><path d="M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4"/></svg></button>
+  <div class="seg" role="group" aria-label="View">
+    <button data-view="live" aria-pressed="true" title="Live Preview: one pane, formatting shows as you type">Live</button>
+    <button data-view="editor" aria-pressed="false" title="Source: plain Markdown">Write</button>
+    <button data-view="split" aria-pressed="false" title="Side by side">Split</button>
+    <button data-view="preview" aria-pressed="false" title="Reading view">Read</button>
+  </div>
+  <button id="bTheme" title="Toggle light/dark"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg></button>
+</header>
+
+<div id="findBar">
+  <input id="fFind" main-field="true" placeholder="Find" aria-label="Find" spellcheck="false">
+  <span id="fCount"></span>
+  <button id="fPrev" title="Previous (Shift+Enter)">↑</button>
+  <button id="fNext" title="Next (Enter)">↓</button>
+  <button id="fCase" class="tog opt" aria-pressed="false" title="Match case">Aa</button>
+  <button id="fRegex" class="tog opt" aria-pressed="false" title="Regular expression">.*</button>
+  <span class="rep">
+    <input id="fRep" placeholder="Replace with" aria-label="Replace with" spellcheck="false">
+    <button id="fOne" title="Replace this one (Enter)">Replace</button>
+    <button id="fAll" title="Replace every match (Ctrl+Enter)">All</button>
+  </span>
+  <button id="fClose" title="Close (Esc)">✕</button>
+</div>
+
+<main id="main" data-view="live">
+  <aside id="side" hidden>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="files" aria-selected="true">Files</button>
+      <button role="tab" data-tab="outline" aria-selected="false">Outline</button>
+    </div>
+    <div class="pane" id="filesPane">
+      <div class="libhead" id="libHead" hidden>
+        <span class="name" id="libName"></span>
+        <button id="bNewNote" title="New note">+</button>
+        <button id="bNewFolder" title="New folder"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5M9.5 13.5h5"/></svg></button>
+        <button id="bRefresh" title="Refresh"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>
+        <button id="bLibMenu" title="Switch library">⋯</button>
+      </div>
+      <div id="tree"></div>
+      <div class="libempty" id="libEmpty"></div>
+    </div>
+    <div class="pane" id="olPane" hidden><div id="olList"></div></div>
+  </aside>
+  <div id="editPane"></div>
+  <div id="divider" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+  <article id="preview" class="md" aria-label="Preview"></article>
+</main>
+
+<footer>
+  <span class="grow"><span id="dirtyDot"></span> <span id="fname"></span></span>
+  <span id="cursor"></span>
+  <span id="stats"></span>
+</footer>
+
+<div class="ctx" id="ctx" hidden></div>
+<div class="modal" id="ask" hidden><div class="box">
+  <p id="askMsg"></p>
+  <input id="askInput" spellcheck="false">
+  <div class="btns" id="askBtns"></div>
+</div></div>
+<div class="modal" id="qs" hidden><div class="box">
+  <input id="qsInput" placeholder="Find or create a note…" spellcheck="false">
+  <div id="qsList"></div>
+</div></div>
+<div id="toast"></div>
+<div id="dropHint">Drop a Markdown file to open it, or an image to add it</div>
+<button id="focusExit" title="Leave focus mode (Esc)">✕</button>
+
+<script type="text/plain" id="welcome"># Welcome to Markpad
+
+A small Markdown editor. It works offline, and your notes are plain `.md` files you can open anywhere.
+
+## Getting started
+
+- **Live** shows formatting as you type, all in one pane. Click a line to see its Markdown.
+- **Write** is plain Markdown, **Split** puts Markdown and preview side by side, **Read** is just the page
+- Open the **sidebar** (top-left button) to pick a library: a notes folder, or your Obsidian vault
+- Paste or drop an image to add it to your note
+
+## Shortcuts
+
+| Action | Keys |
+| --- | --- |
+| Bold / Italic / Link | `Ctrl+B` / `Ctrl+I` / `Ctrl+K` |
+| Save / Save as | `Ctrl+S` / `Ctrl+Shift+S` |
+| New note / Open file | `Ctrl+N` / `Ctrl+O` |
+| Quick open a note | `Ctrl+P` |
+| Find / Replace | `Ctrl+F` / `Ctrl+H` |
+| Sidebar / Outline | `Ctrl+\` / `Ctrl+Shift+O` |
+| Switch view | `Ctrl+/` |
+| Focus mode | `Ctrl+Shift+F` (Esc to leave) |
+
+## What it supports
+
+- [x] Headings, **bold**, *italic*, ~~strikethrough~~, ==highlight==, `inline code`
+- [x] Lists, nested lists, and task lists
+  - Press Enter in a list and the next bullet appears for you
+- [ ] Click this checkbox to tick it off
+- [x] `[[Wiki links]]` between notes in a library, like Obsidian
+
+> Blockquotes look like this.
+
+```js
+// Fenced code blocks
+console.log("hello, markdown");
+```
+
+Links work too: [Markdown guide](https://www.markdownguide.org/basic-syntax/)
+
+---
+
+Delete all this and start writing.
+</script>
+<script>/*APP*/</script>
+</body>
+</html>
