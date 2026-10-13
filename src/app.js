@@ -5,7 +5,7 @@ import { markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } fro
 import { createEditor } from './editor.js';
 import { host } from './host.js';
 
-const VERSION = '2.1.6';
+const VERSION = '2.1.7';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -687,6 +687,7 @@ async function renamePath(p, isDir){
   const inside = c => c.kind === 'lib' && (c.path === p || c.path.startsWith(p + '/'));
   if (inside(cur)) await flush();
   try {
+    const relinks = await planRelinks(p, to);
     await lib.fs.rename(p, to);
     stash();
     for (const t of tabs) if (inside(t.cur)){
@@ -696,7 +697,56 @@ async function renamePath(p, isDir){
     updateTitle(); saveSession();
     if (expanded.delete(p)) expanded.add(to);
     await refreshTree();
+    await applyRelinks(relinks, p, to);
   } catch (e){ toast("Couldn't rename: " + (e.message || e)); }
+}
+// like Obsidian: after a rename, [[links]] in other notes follow the note to its new name
+async function planRelinks(from, to){
+  const moved = q => q === from || q.startsWith(from + '/');
+  const plan = [];
+  stash();
+  for (const f of allFiles()){
+    if (!/\.md$/i.test(f.name)) continue;
+    const t = tabs.find(t => t.cur.kind === 'lib' && t.cur.path === f.path);
+    const text = t ? t.state.doc.toString() : await lib.fs.read(f.path).catch(() => '');
+    if (!text.includes('[[')) continue;
+    const changes = [];
+    for (const m of text.matchAll(/(!?\[\[)([^\]|#\n]+)/g)){
+      const target = m[2], hit = target.trim() && resolveWiki(target);
+      if (!hit || !moved(hit)) continue;
+      const np = to + hit.slice(from.length), md = /\.md$/i.test(target.trim()) ? '.md' : '';
+      const insert = (target.includes('/') ? np : basename(np)).replace(/\.md$/i, '') + md;
+      const at = m.index + m[1].length;
+      changes.push({ from: at, to: at + target.length, insert });
+    }
+    if (changes.length) plan.push({ path: f.path, text, changes });
+  }
+  return plan;
+}
+async function applyRelinks(plan, from, to){
+  let n = 0;
+  stash();
+  for (const { path, text, changes } of plan){
+    const p = path === from || path.startsWith(from + '/') ? to + path.slice(from.length) : path;
+    try {
+      const k = tabs.findIndex(t => t.cur.kind === 'lib' && t.cur.path === p);
+      if (k === active){
+        const clean = !dirty;
+        view.dispatch({ changes });
+        if (clean) await save(false, true);
+      } else if (k >= 0){
+        const t = tabs[k];
+        t.state = t.state.update({ changes }).state;
+        if (!t.dirty){ await lib.fs.write(p, t.state.doc.toString()); t.cur.mtime = await lib.fs.mtime(p).catch(() => 0); }
+      } else {
+        let out = '', at = 0;
+        for (const c of changes){ out += text.slice(at, c.from) + c.insert; at = c.to; }
+        await lib.fs.write(p, out + text.slice(at));
+      }
+      n++;
+    } catch (_){}
+  }
+  if (n) toast(`Updated links in ${n} note${n > 1 ? 's' : ''}`);
 }
 async function trashPath(p, isDir){
   if (!(await confirmBox(`Move ${basename(p)}${isDir ? ' and everything in it' : ''} to the library's .trash folder?`, 'Move to trash'))) return;
@@ -1379,4 +1429,4 @@ window.__mpBack = () => {
 
 // for the automated tests
 window.__markpad = { get view(){ return view; }, get cur(){ return cur; }, get lib(){ return lib; }, get tabs(){ return tabs; }, get active(){ return active; },
-  openLibrary, openLibFile, setView, insertImages, toggleSide, showTab, openInTab, selectTab, closeTab, newTab };
+  openLibrary, openLibFile, setView, insertImages, toggleSide, showTab, openInTab, selectTab, closeTab, newTab, renamePath, host };
