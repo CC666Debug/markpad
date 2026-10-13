@@ -6,7 +6,7 @@ import { createEditor } from './editor.js';
 import { makeZip, readZip } from './zip.js';
 import { host } from './host.js';
 
-const VERSION = '2.2.0';
+const VERSION = '2.2.1';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -404,6 +404,7 @@ async function save(saveAs, quiet){
       }
       await lib.fs.write(cur.path, t);
       cur.mtime = await lib.fs.mtime(cur.path).catch(() => 0);
+      if (sortMode.startsWith('mod')){ mtimes.set(cur.path, cur.mtime); renderTree(); }
       if (!$('#tagPane').hidden && !$('#side').hidden){ const n = noteTexts.find(n => n.f.path === cur.path); if (n){ n.lines = t.split('\n'); buildTags(); } }
       if (text() === t) setDirty(false);
       if (!quiet) toast('Saved');
@@ -512,7 +513,7 @@ async function openLibrary(desc, quiet){
 }
 async function refreshTree(){
   if (!lib) return renderLibEmpty();
-  try { tree = await lib.fs.list(); }
+  try { tree = await lib.fs.list(); await loadMtimes(); }
   catch (e){ tree = []; toast("Couldn't read the library: " + (e.message || e)); }
   renderTree();
   if (!$('#tagPane').hidden) buildTags(true);
@@ -554,12 +555,39 @@ async function closeLibrary(){
   lib = null; tree = []; store.set('lib', '');
   renderLibEmpty(); updateTitle(); saveSession();
 }
+/* Sort order of the file list (like Obsidian's): name A→Z / Z→A, modified new→old / old→new.
+   Folders stay on top, sorted by name. Modified times are only fetched while that order is on. */
+let sortMode = store.get('sort') || 'name', mtimes = new Map();
+const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+function sortedList(list){
+  const t = n => mtimes.get(n.path) || 0;
+  return [...list].sort((a, b) => (!!b.dir - !!a.dir) || (
+    sortMode === 'name-desc' ? byName(b, a)
+    : a.dir || sortMode === 'name' ? byName(a, b)
+    : (sortMode === 'mod' ? t(b) - t(a) : t(a) - t(b)) || byName(a, b)));
+}
+async function loadMtimes(){
+  if (!lib || !sortMode.startsWith('mod')) return;
+  const files = allFiles(), ts = await Promise.all(files.map(f => lib.fs.mtime(f.path).catch(() => 0)));
+  mtimes = new Map(files.map((f, i) => [f.path, ts[i]]));
+}
+$('#bSort').addEventListener('click', e => {
+  const r = e.currentTarget.getBoundingClientRect();
+  const item = (mode, label) => [(sortMode === mode ? '✓ ' : '\u2003 ') + label, async () => {
+    sortMode = mode; store.set('sort', mode);
+    await loadMtimes(); renderTree();
+  }];
+  showCtx(r.left, r.bottom + 4, [
+    item('name', 'File name (A to Z)'), item('name-desc', 'File name (Z to A)'),
+    item('mod', 'Modified time (new to old)'), item('mod-asc', 'Modified time (old to new)'),
+  ]);
+});
 function renderTree(){
   renderLibEmpty();
   if (!lib) return;
   const rows = [];
   const walk = (list, depth) => {
-    for (const n of list){
+    for (const n of sortedList(list)){
       if (!n.dir && !isNote(n.name)) continue;
       const open = expanded.has(n.path);
       rows.push(`<button class="row${n.dir ? ' dir' + (open ? ' open' : '') : ''}" data-path="${esc(n.path)}" data-dir="${n.dir ? 1 : ''}" style="padding-left:${6 + depth * 14}px">` +
