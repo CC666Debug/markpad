@@ -5,7 +5,7 @@ import { markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } fro
 import { createEditor } from './editor.js';
 import { host } from './host.js';
 
-const VERSION = '2.1.5';
+const VERSION = '2.1.6';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -229,7 +229,22 @@ tabList.addEventListener('auxclick', e => {
   const t = e.target.closest('.tab');
   if (t && e.button === 1){ e.preventDefault(); closeTab(+t.dataset.i); }
 });
-$('#tabbar').addEventListener('dblclick', e => { if (!e.target.closest('.tab')) newTab(); });
+$('#tabbar').addEventListener('dblclick', e => {
+  const t = e.target.closest('.tab');
+  if (!t) newTab(); else if (!e.target.closest('.x')) renameTab(+t.dataset.i);
+});
+// double-click a tab's name: library notes are renamed on disk; unsaved notes just get a new name
+async function renameTab(i){
+  stash();
+  const c = tabs[i]?.cur; if (!c) return;
+  if (c.kind === 'lib'){ if (lib) renamePath(c.path, false); return; }
+  if (c.ref){ toast('Use Save as… to give this file a new name'); return; }
+  let n = await ask('Rename', { input: c.name.replace(/\.md$/i, '') });
+  if (!n) return;
+  n = n.replace(/[\\/:*?"<>|]/g, '-');
+  c.name = isNote(n) ? n : n + '.md';
+  updateTitle(); saveSession();
+}
 $('#bNewTab').addEventListener('click', newTab);
 tabList.addEventListener('contextmenu', e => {
   const t = e.target.closest('.tab'); if (!t) return;
@@ -568,8 +583,15 @@ $('#tree').addEventListener('click', e => {
   } else {
     selectedFolder = dirname(p);
     openLibFile(p, e.ctrlKey || e.metaKey);
-    if (window.innerWidth <= 700) toggleSide(false);
+    // on phones the sidebar closes after a short wait, so a double-tap can still rename
+    if (window.innerWidth <= 700){ clearTimeout(sideCloseTimer); sideCloseTimer = setTimeout(() => toggleSide(false), 350); }
   }
+});
+let sideCloseTimer;
+$('#tree').addEventListener('dblclick', e => {
+  const b = e.target.closest('.row'); if (!b) return;
+  clearTimeout(sideCloseTimer);
+  renamePath(b.dataset.path, !!b.dataset.dir);
 });
 async function openLibFile(path, forceNew){
   try {
