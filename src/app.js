@@ -6,7 +6,7 @@ import { createEditor } from './editor.js';
 import { makeZip, readZip } from './zip.js';
 import { host } from './host.js';
 
-const VERSION = '2.3.0';
+const VERSION = '2.3.1';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -1476,6 +1476,17 @@ $('#tree').addEventListener('auxclick', e => {
   if (b && e.button === 1 && !b.dataset.dir){ e.preventDefault(); openLibFile(b.dataset.path, true); }
 });
 $('#aboutLine').textContent = `Markpad ${VERSION} · ${host.kind === 'browser' ? 'web' : host.kind}`;
+// hidden "Don't count me": tap the version line 5 times. skipgc is GoatCounter's own skip flag (per device).
+{ let taps = 0, timer;
+  $('#aboutLine').addEventListener('click', () => {
+    clearTimeout(timer); timer = setTimeout(() => taps = 0, 1500);
+    if (++taps < 5) return;
+    taps = 0;
+    const skip = localStorage.getItem('skipgc') !== 't';
+    if (skip) localStorage.setItem('skipgc', 't'); else localStorage.removeItem('skipgc');
+    toast(skip ? 'Not counting this device' : 'Counting this device');
+  });
+}
 
 document.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey;
