@@ -50,13 +50,43 @@ details.menu summary::-webkit-details-marker{display:none}
 details.menu summary:hover{background:var(--hover)}
 .menu-list{position:fixed;margin-top:4px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.14);z-index:20;min-width:170px;display:flex;flex-direction:column}
 .menu-list button{justify-content:flex-start;width:100%}
-main{flex:1;display:flex;min-height:0}
-#editPane{flex:0 0 50%;min-width:0;display:flex}
-#editor{flex:1;width:100%;border:0;outline:0;resize:none;background:var(--bg);color:var(--text);font:15px/1.65 ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,monospace;padding:24px 28px;tab-size:4}
+.menu-list .sub{font-size:11.5px;color:var(--muted);padding:6px 8px 2px;border-top:1px solid var(--border);margin-top:4px}
+.menu-list .recent{max-width:260px;overflow:hidden;text-overflow:ellipsis;display:block;text-align:left;line-height:30px}
+button[aria-pressed="true"].tog{background:var(--hover);color:var(--accent)}
+#findBar{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:5px 10px;border-bottom:1px solid var(--border);background:var(--panel)}
+#findBar[hidden]{display:none}
+#findBar input{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--border);border-radius:6px;height:28px;padding:0 8px;width:220px;outline:0}
+#findBar input:focus{border-color:var(--accent)}
+#findBar button{height:28px;font-size:12.5px}
+#findBar .opt{font:12px ui-monospace,Consolas,monospace;color:var(--muted)}
+#fCount{font-size:12px;color:var(--muted);min-width:70px;padding:0 4px}
+#fCount.none{color:#d4553f}
+#findBar .rep{display:none;align-items:center;gap:4px}
+#findBar.rep-on .rep{display:flex}
+main{flex:1;display:flex;min-height:0;position:relative}
+#outline{flex:0 0 220px;overflow:auto;border-right:1px solid var(--border);background:var(--panel);padding:10px 6px 40px;font-size:13px}
+#outline[hidden]{display:none}
+#outline .head{font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);padding:2px 8px 8px}
+#outline button{display:block;width:100%;height:auto;min-height:26px;text-align:left;padding:4px 8px;color:var(--muted);white-space:normal;line-height:1.3;border-radius:5px}
+#outline button:hover{color:var(--text)}
+#outline button.on{color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,transparent)}
+#outline .empty{color:var(--muted);padding:4px 8px;font-size:12.5px}
+#editPane{flex:0 0 50%;min-width:0;display:flex;position:relative;background:var(--bg)}
+#editor{flex:1;width:100%;border:0;outline:0;resize:none;background:transparent;color:var(--text);font:15px/1.65 ui-monospace,"Cascadia Code","SF Mono",Menlo,Consolas,monospace;padding:24px 28px;tab-size:4;position:relative;z-index:1}
+#hl{position:absolute;top:0;left:0;bottom:0;overflow:hidden;white-space:pre-wrap;overflow-wrap:break-word;color:transparent;pointer-events:none;tab-size:4}
+#hl mark{color:transparent;background:color-mix(in srgb,var(--mark) 75%,transparent);border-radius:2px}
+#hl mark.cur{background:color-mix(in srgb,var(--accent) 40%,transparent)}
+#mirror{position:absolute;visibility:hidden;left:-99999px;top:0;white-space:pre-wrap;overflow-wrap:break-word}
+#focusExit{position:fixed;top:10px;right:14px;z-index:25;display:none;opacity:.25;color:var(--muted)}
+#focusExit:hover{opacity:1}
+body.focus #focusExit{display:inline-flex}
+body.focus header,body.focus footer,body.focus #outline,body.focus #findBar,body.focus #preview,body.focus #divider{display:none!important}
+body.focus #editPane{display:flex!important;flex:1 1 auto!important}
+body.focus #editor{font-size:17px;padding:12vh max(24px,calc(50% - 360px)) 40vh!important}
 #editor::selection{background:color-mix(in srgb,var(--accent) 30%,transparent)}
 #divider{flex:none;width:6px;cursor:col-resize;border-left:1px solid var(--border);background:var(--bg);touch-action:none}
 #divider:hover,#divider.drag{background:color-mix(in srgb,var(--accent) 25%,transparent)}
-#preview{flex:1;overflow:auto;min-width:0;padding:28px 36px 80px}
+#preview{flex:1;overflow:auto;min-width:0;padding:28px 36px 80px;position:relative}
 main[data-view="editor"] #preview,main[data-view="editor"] #divider{display:none}
 main[data-view="editor"] #editPane{flex:1 1 auto!important}
 main[data-view="editor"] #editor{padding-left:max(28px,calc(50% - 420px));padding-right:max(28px,calc(50% - 420px))}
@@ -74,10 +104,12 @@ body.dragging #dropHint{display:flex}
   #divider{display:none!important}
   #editor{padding:16px!important}
   #preview{padding:16px 16px 60px}
+  #outline{position:absolute;top:0;bottom:0;left:0;width:240px;z-index:15;box-shadow:0 8px 24px rgba(0,0,0,.2)}
+  #findBar input{width:150px}
   .lbl,.brand span,.hide-sm{display:none}
 }
 @media print{
-  header,footer,#editPane,#divider,#toast{display:none!important}
+  header,footer,#editPane,#divider,#toast,#outline,#findBar,#focusExit{display:none!important}
   body{height:auto;overflow:visible;display:block;background:#fff}
   main{display:block}
   #preview{display:block!important;overflow:visible;padding:0}
@@ -110,7 +142,8 @@ body.dragging #dropHint{display:flex}
 </head>
 <body>
 <header>
-  <div class="brand"><img alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233b6fd8'/%3E%3Cpath d='M7 22V10h3l3 4 3-4h3v12h-3v-7l-3 4-3-4v7zM22 17h2v-7h2v7h2l-3 4z' fill='white'/%3E%3C/svg%3E"><span>Markpad</span></div>
+  <button id="bOutline" class="tog" aria-pressed="false" title="Outline (Ctrl+Shift+O)"><svg viewBox="0 0 24 24"><path d="M4 6h.01M4 12h.01M4 18h.01M8 6h12M11 12h9M11 18h9"/></svg></button>
+  <div class="brand" title="Markpad 1.1.0"><img alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233b6fd8'/%3E%3Cpath d='M7 22V10h3l3 4 3-4h3v12h-3v-7l-3 4-3-4v7zM22 17h2v-7h2v7h2l-3 4z' fill='white'/%3E%3C/svg%3E"><span>Markpad</span></div>
   <button id="bNew" title="New file"><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M12 12v6M9 15h6"/></svg><span class="lbl">New</span></button>
   <button id="bOpen" title="Open (Ctrl+O)"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="lbl">Open</span></button>
   <button id="bSave" title="Save (Ctrl+S)"><svg viewBox="0 0 24 24"><path d="M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8V3M7 21v-7h10v7"/></svg><span class="lbl">Save</span></button>
@@ -120,6 +153,7 @@ body.dragging #dropHint{display:flex}
       <button id="bSaveAs">Save as… <span style="margin-left:auto;color:var(--muted);font-size:12px">Ctrl+Shift+S</span></button>
       <button id="bExport">Export as HTML</button>
       <button id="bPrint">Print / Save as PDF</button>
+      <div id="recentBox"></div>
     </div>
   </details>
   <div class="sep"></div>
@@ -139,6 +173,8 @@ body.dragging #dropHint{display:flex}
     <button data-f="hr" title="Divider" class="hide-sm">―</button>
   </div>
   <div class="spacer"></div>
+  <button id="bFind" class="tog" aria-pressed="false" title="Find and replace (Ctrl+F / Ctrl+H)"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg></button>
+  <button id="bFocus" title="Focus mode (Ctrl+Shift+F)"><svg viewBox="0 0 24 24"><path d="M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4"/></svg></button>
   <div class="seg" role="group" aria-label="View">
     <button data-view="editor" aria-pressed="false" title="Editor only">Write</button>
     <button data-view="split" aria-pressed="true" title="Side by side">Split</button>
@@ -147,8 +183,24 @@ body.dragging #dropHint{display:flex}
   <button id="bTheme" title="Toggle light/dark"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg></button>
 </header>
 
+<div id="findBar" hidden>
+  <input id="fFind" placeholder="Find" aria-label="Find" spellcheck="false">
+  <span id="fCount"></span>
+  <button id="fPrev" title="Previous (Shift+Enter)">↑</button>
+  <button id="fNext" title="Next (Enter)">↓</button>
+  <button id="fCase" class="tog opt" aria-pressed="false" title="Match case">Aa</button>
+  <button id="fRegex" class="tog opt" aria-pressed="false" title="Regular expression">.*</button>
+  <span class="rep">
+    <input id="fRep" placeholder="Replace with" aria-label="Replace with" spellcheck="false">
+    <button id="fOne" title="Replace this one">Replace</button>
+    <button id="fAll" title="Replace every match">All</button>
+  </span>
+  <button id="fClose" title="Close (Esc)">✕</button>
+</div>
+
 <main id="main" data-view="split">
-  <div id="editPane"><textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Markdown editor"></textarea></div>
+  <nav id="outline" aria-label="Outline" hidden><div class="head">Outline</div><div id="olList"></div></nav>
+  <div id="editPane"><div id="hl" aria-hidden="true"></div><textarea id="editor" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Markdown editor"></textarea></div>
   <div id="divider" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
   <article id="preview" class="md" aria-label="Preview"></article>
 </main>
@@ -161,7 +213,9 @@ body.dragging #dropHint{display:flex}
 
 <input type="file" id="fileInput" accept=".md,.markdown,.mdown,.mkd,.txt,text/markdown,text/plain" hidden>
 <div id="toast"></div>
-<div id="dropHint">Drop a Markdown file to open it</div>
+<div id="dropHint">Drop a Markdown file to open it, or an image to add it</div>
+<button id="focusExit" title="Leave focus mode (Esc)">✕</button>
+<div id="mirror" aria-hidden="true"></div>
 
 <script type="text/plain" id="welcome"># Welcome to Markpad
 
@@ -184,6 +238,11 @@ A tiny, portable Markdown editor. It's **one HTML file**, works offline, and run
 | Open | `Ctrl+O` |
 | Indent / Outdent | `Tab` / `Shift+Tab` |
 | Switch view | `Ctrl+/` |
+| Find / Replace | `Ctrl+F` / `Ctrl+H` |
+| Outline | `Ctrl+Shift+O` |
+| Focus mode | `Ctrl+Shift+F` (Esc to leave) |
+
+Paste or drop an image to add it to your note.
 
 On macOS, use `Cmd` instead of `Ctrl`.
 
@@ -228,6 +287,8 @@ const H_RE = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
 const QUOTE_RE = /^ {0,3}> ?/;
 const SEP_RE = /^ *\|? *:?-+:? *(\| *:?-+:? *)*\|? *$/;
 const SETEXT_RE = /^ {0,3}(=+|-+) *$/;
+const DEF_RE = /^ {0,3}\[([^\]]+)\]:[ \t]*(\S+)(?:[ \t]+"(.*)")?[ \t]*$/;
+let refs = {};
 
 const isTableStart = (lines,i) => lines[i].includes('|') && i+1 < lines.length && SEP_RE.test(lines[i+1]) && lines[i+1].includes('|');
 const startsBlock = l => FENCE_RE.test(l) || H_RE.test(l) || HR_RE.test(l) || QUOTE_RE.test(l) || /^ {0,3}([-*+]|1[.)])[ \t]+\S/.test(l);
@@ -255,6 +316,14 @@ function inline(s){
     (m,a,u,t) => put(`<img src="${safeUrl(u,true)}" alt="${a}"${t?` title="${t}"`:''} loading="lazy">`));
   s = s.replace(/\[([^\]]+)\]\(\s*([^)\s]*)(?:\s+&quot;(.*?)&quot;)?\s*\)/g,
     (m,x,u,t) => put(`<a href="${safeUrl(u)}"${t?` title="${t}"`:''}>`) + x + put('</a>'));
+  s = s.replace(/!\[([^\]]*)\]\[([^\]]*)\]/g, (m,a,id) => {
+    const u = refs[(id || a).toLowerCase()];
+    return u ? put(`<img src="${safeUrl(u,true)}" alt="${a}" loading="lazy">`) : m;
+  });
+  s = s.replace(/\[([^\]]+)\]\[([^\]]*)\]/g, (m,x,id) => {
+    const u = refs[(id || x).toLowerCase()];
+    return u ? put(`<a href="${safeUrl(u)}">`) + x + put('</a>') : m;
+  });
   s = s.replace(/&lt;((?:https?|mailto):[^\s]+?)&gt;/g, (m,u) => put(`<a href="${u}">${u}</a>`));
   s = s.replace(/(^|[\s(])(https?:\/\/[^\s<]*[^\s<.,;:!?)\]'"])/g, (m,p,u) => p + put(`<a href="${u}">${u}</a>`));
   s = s.replace(/\*\*\*(?=\S)([\s\S]*?\S)\*\*\*/g, '<strong><em>$1</em></strong>');
@@ -269,11 +338,14 @@ function inline(s){
   return s;
 }
 
-function blocks(lines, tight){
-  const out = []; let i = 0, m;
+function blocks(lines, tight, top){
+  const out = []; let i = 0, m, mark = -1, markLine = 0;
+  // top-level blocks get data-line="N" so scroll sync and the outline can find them
+  const tag = () => { if (top && mark >= 0 && out[mark]) out[mark] = out[mark].replace(/^<(\w+)/, `<$1 data-line="${markLine}"`); };
   while (i < lines.length){
     const line = lines[i];
-    if (!line.trim()){ i++; continue; }
+    if (!line.trim() || (top && DEF_RE.test(line))){ i++; continue; }
+    tag(); mark = out.length; markLine = i;
 
     if ((m = line.match(FENCE_RE))){
       const f = m[1], lang = m[2];
@@ -349,16 +421,26 @@ function blocks(lines, tight){
     while (i < lines.length && lines[i].trim()){
       const sm = lines[i].match(SETEXT_RE);
       if (sm){ setext = sm[1][0] === '=' ? 1 : 2; i++; break; }
-      if (startsBlock(lines[i]) || isTableStart(lines,i)) break;
+      if (startsBlock(lines[i]) || isTableStart(lines,i) || (top && DEF_RE.test(lines[i]))) break;
       buf.push(lines[i++]);
     }
     const html = inline(buf.map(s => s.replace(/^ +/,'')).join('\n').replace(/[ \t]+$/,''));
     if (setext) out.push(`<h${setext} id="${slug(buf.join(' '))}">${html}</h${setext}>`);
     else out.push(tight ? html : '<p>' + html + '</p>');
   }
+  tag();
   return out.join('\n');
 }
-const markdown = src => blocks(src.replace(/\r\n?/g,'\n').split('\n').map(l => l.replace(/^\t+/, t => '    '.repeat(t.length))), false);
+function markdown(src){
+  const lines = src.replace(/\r\n?/g,'\n').split('\n').map(l => l.replace(/^\t+/, t => '    '.repeat(t.length)));
+  refs = {}; let inFence = false;
+  for (const l of lines){
+    if (FENCE_RE.test(l)) inFence = !inFence;
+    const m = !inFence && l.match(DEF_RE);
+    if (m) refs[esc(m[1]).toLowerCase()] = esc(m[2]);
+  }
+  return blocks(lines, false, true);
+}
 
 /* ---------------- State & rendering ---------------- */
 let fileHandle = null, fileName = 'untitled.md', dirty = false, renderTimer = 0, draftTimer = 0;
@@ -367,7 +449,234 @@ function render(){
   pv.innerHTML = markdown(ed.value);
   const text = ed.value, words = (text.match(/\S+/g) || []).length;
   $('#stats').textContent = `${words.toLocaleString()} words · ${text.length.toLocaleString()} chars · ${Math.max(1, Math.round(words/230))} min read`;
+  lineTops = null;
+  buildOutline();
+  if (findOpen()) highlight();
+  if (scrollSrc === 'ed') syncScroll(ed);
 }
+
+/* ---------------- Line positions (scroll sync, find, outline) ---------------- */
+// A hidden copy of the editor measures where each source line sits, since textarea lines wrap.
+let lineTops = null;
+const mirror = $('#mirror');
+function copyBox(el){
+  const cs = getComputedStyle(ed);
+  el.style.width = ed.clientWidth + 'px';
+  for (const p of ['fontFamily','fontSize','lineHeight','letterSpacing','paddingTop','paddingRight','paddingBottom','paddingLeft']) el.style[p] = cs[p];
+}
+function measure(){
+  if (lineTops) return lineTops;
+  copyBox(mirror);
+  mirror.innerHTML = ed.value.split('\n').map(l => '<div>' + (esc(l) || ' ') + '</div>').join('');
+  lineTops = [...mirror.children].map(d => d.offsetTop);
+  mirror.textContent = '';
+  return lineTops;
+}
+const lineOf = pos => ed.value.slice(0, pos).split('\n').length - 1;
+function scrollEditorTo(pos){
+  const y = measure()[lineOf(pos)] || 0;
+  if (y < ed.scrollTop + 20 || y > ed.scrollTop + ed.clientHeight - 60) ed.scrollTop = y - ed.clientHeight / 3;
+}
+
+/* ---------------- Scroll sync ---------------- */
+let scrollSrc = 'ed', syncing = null;
+function pairs(){
+  const tops = measure(), out = [[0, 0]];
+  pv.querySelectorAll('[data-line]').forEach(el => out.push([tops[+el.dataset.line] ?? 0, el.offsetTop]));
+  out.push([ed.scrollHeight, pv.scrollHeight]);
+  return out;
+}
+function syncScroll(from){
+  if (main.dataset.view !== 'split' || document.body.classList.contains('focus')) return;
+  const to = from === ed ? pv : ed, a = from === ed ? 0 : 1, b = 1 - a;
+  const max = from.scrollHeight - from.clientHeight, tmax = to.scrollHeight - to.clientHeight;
+  let y;
+  if (from.scrollTop >= max - 2) y = tmax;
+  else {
+    const P = pairs(), s = from.scrollTop;
+    let k = 0; while (k < P.length - 2 && P[k+1][a] <= s) k++;
+    const [p, q] = [P[k], P[k+1]], span = q[a] - p[a];
+    y = p[b] + (span > 0 ? (s - p[a]) / span : 0) * (q[b] - p[b]);
+  }
+  syncing = to; to.scrollTop = y;
+}
+ed.addEventListener('scroll', () => {
+  hl.scrollTop = ed.scrollTop;
+  if (syncing === ed){ syncing = null; } else if (scrollSrc === 'ed') syncScroll(ed);
+  markOutline();
+}, { passive: true });
+pv.addEventListener('scroll', () => {
+  if (syncing === pv){ syncing = null; } else if (scrollSrc === 'pv') syncScroll(pv);
+  if (main.dataset.view === 'preview') markOutline();
+}, { passive: true });
+for (const [el, name] of [[ed, 'ed'], [pv, 'pv']])
+  for (const ev of ['pointerenter','pointerdown','wheel','touchstart','keydown','focus'])
+    el.addEventListener(ev, () => { scrollSrc = name; }, { passive: true });
+window.addEventListener('resize', () => { lineTops = null; if (findOpen()) highlight(); });
+
+/* ---------------- Outline ---------------- */
+let heads = [];
+const plain = t => t.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[*_~=`]+/g, '').trim();
+function buildOutline(){
+  const lines = ed.value.split('\n'); heads = []; let inFence = false;
+  lines.forEach((l, i) => {
+    if (FENCE_RE.test(l)){ inFence = !inFence; return; }
+    if (inFence) return;
+    const m = l.match(H_RE);
+    if (m && m[2]) heads.push({ n: m[1].length, t: plain(m[2]), line: i });
+    else if (l.trim() && i + 1 < lines.length && /^ {0,3}(=+|-+) *$/.test(lines[i+1]) && !startsBlock(l) && !/^\s*[|>]/.test(l) && (!lines[i-1] || !lines[i-1].trim()))
+      heads.push({ n: lines[i+1].trim()[0] === '=' ? 1 : 2, t: plain(l), line: i });
+  });
+  if ($('#outline').hidden) return;
+  const min = Math.min(...heads.map(h => h.n));
+  $('#olList').innerHTML = heads.length
+    ? heads.map((h, k) => `<button data-k="${k}" style="padding-left:${8 + (h.n - min) * 14}px">${esc(h.t) || '(empty)'}</button>`).join('')
+    : '<div class="empty">No headings yet. Start a line with # to add one.</div>';
+  markOutline();
+}
+function topLine(){
+  if (main.dataset.view === 'preview'){
+    let ln = 0;
+    for (const el of pv.querySelectorAll('[data-line]')){ if (el.offsetTop > pv.scrollTop + 40) break; ln = +el.dataset.line; }
+    return ln;
+  }
+  const tops = measure(); let ln = 0;
+  while (ln < tops.length - 1 && tops[ln+1] <= ed.scrollTop + 40) ln++;
+  return ln;
+}
+function markOutline(){
+  if ($('#outline').hidden || !heads.length) return;
+  const ln = topLine(); let k = -1;
+  heads.forEach((h, i) => { if (h.line <= ln) k = i; });
+  $('#olList').querySelectorAll('button').forEach((b, i) => b.classList.toggle('on', i === k));
+}
+function jumpToLine(line){
+  const lines = ed.value.split('\n'), pos = lines.slice(0, line).reduce((n, l) => n + l.length + 1, 0);
+  if (main.dataset.view !== 'preview'){
+    ed.focus(); ed.setSelectionRange(pos, pos);
+    ed.scrollTop = measure()[line] - 12;
+  }
+  let target = null;
+  for (const el of pv.querySelectorAll('[data-line]')){ if (+el.dataset.line > line) break; target = el; }
+  if (target){ syncing = main.dataset.view === 'split' ? pv : null; pv.scrollTop = target.offsetTop - 12; }
+  updateCursor();
+}
+$('#olList').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  jumpToLine(heads[+b.dataset.k].line);
+  if (window.innerWidth <= 700) toggleOutline(false);
+});
+function toggleOutline(on = $('#outline').hidden){
+  $('#outline').hidden = !on; $('#bOutline').setAttribute('aria-pressed', String(on));
+  if (window.innerWidth > 700) store.set('outline', on ? '1' : '');
+  lineTops = null; buildOutline();
+}
+$('#bOutline').addEventListener('click', () => toggleOutline());
+
+/* ---------------- Find & replace ---------------- */
+const hl = $('#hl'), fb = $('#findBar'), fFind = $('#fFind'), fRep = $('#fRep');
+const findOpen = () => !fb.hidden;
+const opt = id => $(id).getAttribute('aria-pressed') === 'true';
+function findRe(){
+  const q = fFind.value; if (!q) return null;
+  try { return new RegExp(opt('#fRegex') ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gm' + (opt('#fCase') ? '' : 'i')); }
+  catch (_) { return null; }
+}
+function matches(){
+  const re = findRe(), out = []; if (!re) return out;
+  let m;
+  while ((m = re.exec(ed.value)) && out.length < 5000){
+    if (!m[0].length){ re.lastIndex++; continue; }
+    out.push([m.index, m.index + m[0].length]);
+  }
+  return out;
+}
+function curMatch(ms){ return ms.findIndex(([a, b]) => a === ed.selectionStart && b === ed.selectionEnd); }
+function highlight(){
+  const ms = matches(), cur = curMatch(ms), v = ed.value;
+  let h = '', at = 0;
+  ms.forEach(([a, b], k) => { h += esc(v.slice(at, a)) + `<mark${k === cur ? ' class="cur"' : ''}>` + esc(v.slice(a, b)) + '</mark>'; at = b; });
+  copyBox(hl);
+  hl.innerHTML = h + esc(v.slice(at)) + ' ';
+  hl.scrollTop = ed.scrollTop;
+  const c = $('#fCount');
+  c.textContent = !fFind.value ? '' : !findRe() ? 'Bad pattern' : !ms.length ? 'No results' : cur >= 0 ? `${cur + 1} of ${ms.length}` : `${ms.length} found`;
+  c.classList.toggle('none', !!fFind.value && !ms.length);
+  return ms;
+}
+function selectMatch([a, b]){
+  ed.setSelectionRange(a, b);
+  scrollEditorTo(a); scrollSrc = 'ed'; syncScroll(ed);
+  highlight();
+}
+function findStep(dir, from){
+  const ms = matches(); if (!ms.length){ highlight(); return; }
+  let k;
+  if (from != null) k = ms.findIndex(([a]) => a >= from);
+  else if (dir > 0) k = ms.findIndex(([a]) => a >= ed.selectionEnd);
+  else { k = -1; ms.forEach(([a], i) => { if (a < ed.selectionStart) k = i; }); if (k < 0) k = ms.length - 1; }
+  if (k < 0) k = 0;
+  selectMatch(ms[k]);
+}
+let findFrom = 0;
+function openFind(rep){
+  if (main.dataset.view === 'preview') setView('split');
+  const sel = ed.value.slice(ed.selectionStart, ed.selectionEnd);
+  if (sel && !sel.includes('\n')) fFind.value = sel;
+  fb.hidden = false; fb.classList.toggle('rep-on', !!rep);
+  $('#bFind').setAttribute('aria-pressed', 'true');
+  findFrom = ed.selectionStart;
+  if (rep && fFind.value) fRep.focus(); else fFind.select();
+  highlight();
+}
+function closeFind(){
+  fb.hidden = true; hl.textContent = ''; $('#bFind').setAttribute('aria-pressed', 'false');
+  ed.focus();
+}
+fFind.addEventListener('input', () => findStep(1, findFrom));
+fb.addEventListener('keydown', e => {
+  if (e.key === 'Escape'){ e.preventDefault(); closeFind(); }
+  else if (e.key === 'Enter' && e.target === fFind){ e.preventDefault(); findStep(e.shiftKey ? -1 : 1); }
+  else if (e.key === 'Enter' && e.target === fRep){ e.preventDefault(); e.ctrlKey || e.metaKey ? replaceAll() : replaceOne(); }
+});
+const repText = () => opt('#fRegex') ? fRep.value : fRep.value.replace(/\$/g, '$$$$');
+function replaceOne(){
+  const ms = matches(), k = curMatch(ms);
+  if (k < 0){ findStep(1); return; }
+  const [a, b] = ms[k], re = findRe(), one = new RegExp(re.source, re.flags.replace('g', ''));
+  const out = ed.value.slice(a, b).replace(one, repText());
+  replaceRange(a, b, out, a + out.length);
+  fRep.focus(); findStep(1);
+}
+function replaceAll(){
+  const n = matches().length; if (!n) return;
+  const keep = ed.scrollTop, out = ed.value.replace(findRe(), repText());
+  replaceRange(0, ed.value.length, out, 0); ed.scrollTop = keep;
+  fRep.focus(); highlight(); toast(`Replaced ${n}`);
+}
+$('#fNext').addEventListener('click', () => findStep(1));
+$('#fPrev').addEventListener('click', () => findStep(-1));
+$('#fOne').addEventListener('click', replaceOne);
+$('#fAll').addEventListener('click', replaceAll);
+$('#fClose').addEventListener('click', closeFind);
+for (const id of ['#fCase', '#fRegex']) $(id).addEventListener('click', () => {
+  $(id).setAttribute('aria-pressed', String(!opt(id))); findStep(1, findFrom);
+});
+$('#bFind').addEventListener('click', () => findOpen() ? closeFind() : openFind(false));
+
+/* ---------------- Focus mode ---------------- */
+function setFocus(on){
+  document.body.classList.toggle('focus', on);
+  lineTops = null;
+  if (on){
+    toast('Focus mode · Esc to leave');
+    document.documentElement.requestFullscreen?.().catch(() => {});
+    ed.focus();
+  } else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+$('#bFocus').addEventListener('click', () => setFocus(true));
+$('#focusExit').addEventListener('click', () => setFocus(false));
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && document.body.classList.contains('focus')) setFocus(false); });
 function scheduleRender(){
   clearTimeout(renderTimer);
   renderTimer = setTimeout(render, ed.value.length > 50000 ? 250 : 60);
@@ -416,7 +725,7 @@ async function openFile(){
   try {
     const [h] = await window.showOpenFilePicker({ types: PICK_TYPES, multiple: false });
     const f = await h.getFile();
-    loadText(await f.text(), f.name, h);
+    loadText(await f.text(), f.name, h); addRecent(h);
   } catch (e){ if (e.name !== 'AbortError') toast('Could not open: ' + e.message); }
 }
 
@@ -435,7 +744,7 @@ async function save(saveAs){
     if ('showSaveFilePicker' in window){
       const h = await window.showSaveFilePicker({ suggestedName: fileName, types: PICK_TYPES });
       await writeTo(h);
-      fileHandle = h; fileName = h.name; setDirty(false); toast('Saved');
+      fileHandle = h; fileName = h.name; setDirty(false); toast('Saved'); addRecent(h);
     } else {
       let name = fileName;
       if (saveAs || name === 'untitled.md'){
@@ -465,6 +774,85 @@ function exportHtml(){
   download(fileName.replace(/\.\w+$/,'') + '.html', html, 'text/html');
 }
 
+/* ---------------- Recent files ---------------- */
+// File handles can't go in localStorage, so the last 5 live in IndexedDB.
+const idb = (mode, fn) => new Promise((res, rej) => {
+  const r = indexedDB.open('markpad', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('kv');
+  r.onerror = () => rej(r.error);
+  r.onsuccess = () => {
+    const tx = r.result.transaction('kv', mode), q = fn(tx.objectStore('kv'));
+    tx.oncomplete = () => res(q.result); tx.onerror = () => rej(tx.error);
+  };
+});
+let recent = [];
+const putRecent = () => { showRecent(); return idb('readwrite', st => st.put(recent, 'recent')).catch(() => {}); };
+async function addRecent(handle){
+  if (!handle || !handle.isSameEntry) return;
+  const keep = [];
+  for (const r of recent) if (!(await r.handle.isSameEntry(handle).catch(() => false))) keep.push(r);
+  recent = [{ name: handle.name, handle }, ...keep].slice(0, 5);
+  putRecent();
+}
+function showRecent(){
+  $('#recentBox').innerHTML = recent.length ? '<div class="sub">Recent</div>' +
+    recent.map((r, k) => `<button class="recent" data-k="${k}" title="${esc(r.name)}">${esc(r.name)}</button>`).join('') : '';
+}
+$('#recentBox').addEventListener('click', async e => {
+  const b = e.target.closest('button'), r = b && recent[+b.dataset.k];
+  if (!r) return;
+  menu.open = false;
+  if (!okToDiscard()) return;
+  try {
+    if ((await r.handle.queryPermission({ mode: 'readwrite' })) !== 'granted' &&
+        (await r.handle.requestPermission({ mode: 'readwrite' })) !== 'granted') return;
+    const f = await r.handle.getFile();
+    loadText(await f.text(), f.name, r.handle); addRecent(r.handle);
+  } catch (_) {
+    toast(`Couldn't open ${r.name}. Was it moved or deleted?`);
+    recent = recent.filter(x => x !== r); putRecent();
+  }
+});
+idb('readonly', st => st.get('recent')).then(v => { recent = v || []; showRecent(); }).catch(() => {});
+
+/* ---------------- Images ---------------- */
+// Pasted/dropped images are shrunk and kept inside the note as reference links at the bottom,
+// so the text stays readable and the .md file stays self-contained.
+async function imageData(file){
+  const raw = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(file); });
+  if (/gif|svg/.test(file.type)) return raw;
+  try {
+    const bmp = await createImageBitmap(file), k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const out = c.toDataURL('image/webp', 0.85);
+    return out.length < raw.length ? out : raw;
+  } catch (_) { return raw; }
+}
+async function insertImages(files){
+  if (main.dataset.view === 'preview') setView('split');
+  const s = ed.selectionStart, e = ed.selectionEnd, v = ed.value;
+  const used = new Set((v.match(/^ {0,3}\[[^\]]+\]:/gm) || []).map(x => x.trim().slice(1, -2).toLowerCase()));
+  let n = 1, img = '', defs = '';
+  for (const f of files){
+    while (used.has('image-' + n)) n++;
+    const id = 'image-' + n; used.add(id);
+    const alt = (f.name && !/^image\.\w+$/i.test(f.name) ? f.name.replace(/\.\w+$/, '') : 'image').replace(/[[\]]/g, '');
+    img += (img ? '\n' : '') + `![${alt}][${id}]`;
+    defs += `[${id}]: ${await imageData(f)}\n`;
+  }
+  const body = v.slice(0, s) + img + v.slice(e).replace(/\s+$/, '');
+  const glue = DEF_RE.test(body.slice(body.lastIndexOf('\n') + 1)) ? '\n' : '\n\n';
+  replaceRange(s, v.length, img + v.slice(e).replace(/\s+$/, '') + glue + defs, s + img.length);
+  toast(files.length > 1 ? `Added ${files.length} images` : 'Image added');
+}
+ed.addEventListener('paste', e => {
+  const imgs = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith('image/'));
+  if (!imgs.length) return;
+  e.preventDefault(); insertImages(imgs);
+});
+
 $('#fileInput').addEventListener('change', async e => {
   const f = e.target.files[0]; e.target.value = '';
   if (f) loadText(await f.text(), f.name, null);
@@ -478,6 +866,8 @@ document.addEventListener('dragover', e => { if (e.dataTransfer.types.includes('
 document.addEventListener('drop', async e => {
   if (!e.dataTransfer.types.includes('Files')) return;
   e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging');
+  const all = [...e.dataTransfer.files], imgs = all.filter(f => f.type.startsWith('image/'));
+  if (imgs.length && imgs.length === all.length){ insertImages(imgs); return; }
   const item = e.dataTransfer.items && e.dataTransfer.items[0];
   const file = e.dataTransfer.files[0];
   const handleP = item && item.getAsFileSystemHandle ? item.getAsFileSystemHandle() : null;
@@ -485,7 +875,7 @@ document.addEventListener('drop', async e => {
   let handle = null;
   try { handle = handleP ? await handleP : null; } catch (_) {}
   if (handle && handle.kind !== 'file') handle = null;
-  loadText(await file.text(), file.name, handle);
+  loadText(await file.text(), file.name, handle); addRecent(handle);
 });
 
 window.addEventListener('beforeunload', e => { if (dirty && fileHandle){ e.preventDefault(); e.returnValue = ''; } });
@@ -633,19 +1023,15 @@ pv.addEventListener('click', e => {
   } else if (href !== '#') window.open(href, '_blank', 'noopener');
 });
 
-ed.addEventListener('scroll', () => {
-  if (main.dataset.view !== 'split') return;
-  const r = ed.scrollTop / Math.max(1, ed.scrollHeight - ed.clientHeight);
-  pv.scrollTop = r * (pv.scrollHeight - pv.clientHeight);
-});
-
-ed.addEventListener('input', () => { if (!dirty) setDirty(true); else saveDraft(); scheduleRender(); updateCursor(); });
+ed.addEventListener('input', () => { scrollSrc = 'ed'; lineTops = null; if (!dirty) setDirty(true); else saveDraft(); if (findOpen()) highlight(); scheduleRender(); updateCursor(); });
 ['keyup','click','select','focus'].forEach(ev => ed.addEventListener(ev, updateCursor));
 
 /* ---------------- View, theme, layout ---------------- */
 function setView(v){
   main.dataset.view = v; store.set('view', v);
   document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === v)));
+  lineTops = null;
+  if (findOpen()) highlight();
   if (v !== 'preview') ed.focus();
 }
 document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
@@ -700,9 +1086,14 @@ $('#bPrint').addEventListener('click', closeMenu(() => { render(); window.print(
 document.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey;
   if (e.key === 'Escape' && menu.open){ menu.open = false; return; }
+  if (e.key === 'Escape' && document.body.classList.contains('focus')){ setFocus(false); return; }
+  if (e.key === 'Escape' && findOpen()){ closeFind(); return; }
   if (!mod || e.altKey) return;
   const k = e.key.toLowerCase();
-  if (k === 's'){ e.preventDefault(); save(e.shiftKey); }
+  if (k === 'f' && e.shiftKey){ e.preventDefault(); setFocus(!document.body.classList.contains('focus')); }
+  else if (k === 'f' || k === 'h'){ e.preventDefault(); openFind(k === 'h'); }
+  else if (k === 'o' && e.shiftKey){ e.preventDefault(); toggleOutline(); }
+  else if (k === 's'){ e.preventDefault(); save(e.shiftKey); }
   else if (k === 'o' && !e.shiftKey){ e.preventDefault(); openFile(); }
   else if (k === '/' || e.code === 'Slash'){
     e.preventDefault();
@@ -723,6 +1114,7 @@ if (draft && typeof draft.text === 'string'){
 } else {
   loadText($('#welcome').textContent.replace(/^\n/, ''), 'welcome.md', null);
 }
+if (store.get('outline') && window.innerWidth > 700) toggleOutline(true);
 updateCursor();
 ed.focus();
 })();
