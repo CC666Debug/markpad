@@ -103,15 +103,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-        with: { path: art, merge-multiple: true }
+        with: { path: files, merge-multiple: true }
       - name: Put it on the Releases page
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VER=$(node -p "require('./package.json').version")
-          ls -la art
+          ls -la files
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest art/* --title "Markpad $VER" --notes "Built from $(git rev-parse --short HEAD).
+          gh release create latest files/* --title "Markpad $VER" --notes "Built from $(git rev-parse --short HEAD).
 
           - **Windows**: Markpad-Setup.exe (installs for you only, no admin), or Markpad-Portable-Windows.zip (unzip anywhere, e.g. a USB stick; notes and settings stay in that folder)
           - **Linux Mint**: Markpad.deb (double-click to install), or Markpad.AppImage (make it executable and run; put an empty file called \`portable\` next to it to keep notes beside it)
