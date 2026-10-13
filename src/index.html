@@ -113,6 +113,13 @@ main{flex:1;display:flex;min-height:0;position:relative}
 .libempty button{display:flex;width:100%;justify-content:flex-start;margin-top:6px;border:1px solid var(--border);height:auto;min-height:34px;padding:6px 10px;color:var(--text);white-space:normal;text-align:left}
 #olList button{display:block;width:100%;height:auto;min-height:26px;text-align:left;padding:4px 8px;color:var(--muted);white-space:normal;line-height:1.3;border-radius:5px}
 #olList button:hover{color:var(--text)}
+#tagList{padding:4px}
+#tagList button{display:flex;width:100%;height:auto;min-height:28px;justify-content:space-between;align-items:center;text-align:left;padding:4px 8px;border-radius:5px;white-space:normal;line-height:1.3}
+#tagList .tg{color:var(--accent);font-weight:600}
+#tagList .tg small{color:var(--muted);font-weight:400}
+#tagList .tg.open{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+#tagList .tn{padding-left:22px;color:var(--text)}
+#tagList .tn.on{color:var(--accent)}
 #olList button.on{color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,transparent)}
 .empty{color:var(--muted);padding:4px 8px;font-size:12.5px}
 
@@ -270,6 +277,8 @@ body.focus .cm-scroller{font-size:17px!important}
       <button id="bDelDone">Delete completed items…</button>
       <div class="sub">Settings</div>
       <button id="bNewTabs" class="tog" aria-pressed="false" title="Off: a note replaces the current tab (Ctrl+click or middle-click for a new tab)">Open notes in a new tab</button>
+      <button id="bShowOutline" class="tog" aria-pressed="true">Show Outline tab</button>
+      <button id="bShowTags" class="tog" aria-pressed="true">Show Tags tab</button>
       <button id="bReadable" class="tog" aria-pressed="false" title="On: text stays in a comfortable column. Off: text fills the window.">Readable line length</button>
       <div id="recentBox"></div>
       <div class="sub" id="aboutLine"></div>
@@ -329,6 +338,7 @@ body.focus .cm-scroller{font-size:17px!important}
     <div class="tabs" role="tablist">
       <button role="tab" data-tab="files" aria-selected="true">Files</button>
       <button role="tab" data-tab="outline" aria-selected="false">Outline</button>
+      <button role="tab" data-tab="tags" aria-selected="false">Tags</button>
     </div>
     <div class="pane" id="filesPane">
       <div class="libhead" id="libHead" hidden>
@@ -342,6 +352,7 @@ body.focus .cm-scroller{font-size:17px!important}
       <div class="libempty" id="libEmpty"></div>
     </div>
     <div class="pane" id="olPane" hidden><div id="olList"></div></div>
+    <div class="pane" id="tagPane" hidden><div id="tagList"></div></div>
     <div id="sideGrip" title="Drag to resize (double-click to reset)"></div>
   </aside>
   <div id="editPane"></div>

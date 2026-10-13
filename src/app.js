@@ -6,7 +6,7 @@ import { createEditor } from './editor.js';
 import { makeZip, readZip } from './zip.js';
 import { host } from './host.js';
 
-const VERSION = '2.1.9';
+const VERSION = '2.2.0';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -404,6 +404,7 @@ async function save(saveAs, quiet){
       }
       await lib.fs.write(cur.path, t);
       cur.mtime = await lib.fs.mtime(cur.path).catch(() => 0);
+      if (!$('#tagPane').hidden && !$('#side').hidden){ const n = noteTexts.find(n => n.f.path === cur.path); if (n){ n.lines = t.split('\n'); buildTags(); } }
       if (text() === t) setDirty(false);
       if (!quiet) toast('Saved');
       return;
@@ -514,6 +515,7 @@ async function refreshTree(){
   try { tree = await lib.fs.list(); }
   catch (e){ tree = []; toast("Couldn't read the library: " + (e.message || e)); }
   renderTree();
+  if (!$('#tagPane').hidden) buildTags(true);
 }
 function renderLibEmpty(needs){
   $('#libHead').hidden = !lib; $('#tree').hidden = !lib;
@@ -843,12 +845,16 @@ async function openSearch(q = ''){
   qsMode = 'search'; $('#qsInput').placeholder = 'Search in notes, or #tag';
   $('#qs').hidden = false; $('#qsInput').value = q; $('#qsInput').focus();
   $('#qsList').innerHTML = '<div class="empty">Reading notes…</div>';
+  await readNotes();
+  if (qsMode === 'search' && !$('#qs').hidden) qsFilter();
+}
+// every note's text, split in lines (open tabs count with their unsaved text)
+async function readNotes(){
   stash();
   noteTexts = await Promise.all(allFiles().filter(f => isNote(f.name)).map(async f => {
     const t = tabs.find(t => t.cur.kind === 'lib' && t.cur.path === f.path);
     return { f, lines: (t ? t.state.doc.toString() : await lib.fs.read(f.path).catch(() => '')).split('\n') };
   }));
-  if (qsMode === 'search' && !$('#qs').hidden) qsFilter();
 }
 // a note's tags with their line numbers: #tags in the text (not in code) and frontmatter "tags:"
 function tagsOf(lines){
@@ -1016,8 +1022,42 @@ function toggleSide(on = $('#side').hidden){
 }
 function showTab(tab){
   for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
-  $('#filesPane').hidden = tab !== 'files'; $('#olPane').hidden = tab !== 'outline';
+  $('#filesPane').hidden = tab !== 'files'; $('#olPane').hidden = tab !== 'outline'; $('#tagPane').hidden = tab !== 'tags';
   store.set('tab', tab); buildOutline();
+  if (tab === 'tags') buildTags(true);
+}
+/* Tags tab: every #tag in the library, most used first; click one to see its notes */
+let openTagName = null;
+async function buildTags(reread){
+  const box = $('#tagList');
+  if (!lib){ box.innerHTML = '<div class="empty">Open a library (Files tab) to see its tags.</div>'; return; }
+  if (reread){ if (!noteTexts.length) box.innerHTML = '<div class="empty">Reading notes…</div>'; await readNotes(); }
+  const byTag = new Map();
+  for (const { f, lines } of noteTexts){
+    for (const t of new Set(tagsOf(lines).map(x => x.tag.toLowerCase()))){
+      if (!byTag.has(t)) byTag.set(t, []);
+      byTag.get(t).push(f);
+    }
+  }
+  const all = [...byTag].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+  box.innerHTML = all.map(([t, fs]) => `<button class="tg${t === openTagName ? ' open' : ''}" data-tag="${esc(t)}">#${esc(t)}<small>${fs.length}</small></button>` +
+    (t === openTagName ? fs.map(f => `<button class="tn${cur.kind === 'lib' && cur.path === f.path ? ' on' : ''}" data-path="${esc(f.path)}">${esc(f.name.replace(/\.md$/i, ''))}</button>`).join('') : '')).join('')
+    || '<div class="empty">No tags yet. Type #something in a note (like #idea) and it shows up here.</div>';
+}
+$('#tagList').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.tag){ openTagName = openTagName === b.dataset.tag ? null : b.dataset.tag; buildTags(); }
+  else { openLibFile(b.dataset.path, e.ctrlKey || e.metaKey).then(() => buildTags()); if (window.innerWidth <= 700) toggleSide(false); }
+});
+// Outline and Tags tabs can be hidden (Files always stays)
+function setTabShown(tab, on){
+  document.querySelector(`.tabs [data-tab="${tab}"]`).hidden = !on;
+  store.set('hide.' + tab, on ? '' : '1');
+  $(tab === 'outline' ? '#bShowOutline' : '#bShowTags').setAttribute('aria-pressed', String(on));
+  if (!on && store.get('tab') === tab) showTab('files');
+}
+for (const [tab, id] of [['outline', '#bShowOutline'], ['tags', '#bShowTags']]){
+  $(id).addEventListener('click', () => setTabShown(tab, $(id).getAttribute('aria-pressed') !== 'true'));
 }
 $('#bSide').addEventListener('click', () => toggleSide());
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
@@ -1509,7 +1549,8 @@ if (host.onOpenFile) host.onOpenFile(async f => { await openInTab(f.text, { kind
   recent = (await kvGet('recent')) || []; showRecent();
   libs = (await kvGet('libs')) || [];
   const v = store.get('view'); setView(['live', 'editor', 'split', 'preview'].includes(v) ? v : 'live');
-  showTab(store.get('tab') || 'files');
+  setTabShown('outline', !store.get('hide.outline')); setTabShown('tags', !store.get('hide.tags'));
+  showTab((t => t !== 'files' && store.get('hide.' + t) ? 'files' : t)(store.get('tab') || 'files'));
   if (store.get('side') && window.innerWidth > 700) toggleSide(true);
   const libId = store.get('lib'), want = libs.find(l => l.id === libId);
   if (want && !(await host.ready(want, false))) renderLibEmpty(want);
