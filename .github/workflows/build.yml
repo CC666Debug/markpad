@@ -57,7 +57,9 @@ jobs:
           cp desktop/target/release/bundle/deb/*.deb out/Markpad.deb
           cp desktop/target/release/bundle/appimage/*.AppImage out/Markpad.AppImage
       - uses: actions/upload-artifact@v4
-        with: { name: desktop-${{ runner.os }}, path: out/* }
+        with:
+          name: desktop-${{ runner.os }}
+          path: out/*
 
   android:
     runs-on: ubuntu-latest
