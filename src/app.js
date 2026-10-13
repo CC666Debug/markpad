@@ -5,7 +5,7 @@ import { markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } fro
 import { createEditor } from './editor.js';
 import { host } from './host.js';
 
-const VERSION = '2.1.0';
+const VERSION = '2.1.1';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -147,14 +147,18 @@ async function findTab(info){
   return -1;
 }
 // Open text in a tab: switch to it if that file is already open, reuse an empty untitled tab, or add one.
-async function openInTab(t, info){
+// "Open notes in a new tab" off (default, like Obsidian): a note replaces the current tab, unless
+// that tab has unsaved changes. Ctrl+click / middle-click always opens a new tab.
+let newTabs = store.get('newtabs') === '1';
+async function openInTab(t, info, forceNew){
   const k = await findTab(info);
   if (k >= 0){ await selectTab(k); return; }
   await flush();
   stash();
   const tab = { cur: { kind: 'scratch', name: 'untitled.md', ...info }, dirty: false, state: cm.newState(t.replace(/\r\n?/g, '\n')), scroll: 0 };
   let i;
-  if (active >= 0 && cur.kind === 'scratch' && !dirty && !view.state.doc.length){ i = active; tabs[i] = tab; }
+  const empty = cur.kind === 'scratch' && !view.state.doc.length;
+  if (active >= 0 && !dirty && (empty || !newTabs && !forceNew)){ i = active; tabs[i] = tab; }
   else { i = active + 1; tabs.splice(i, 0, tab); }
   useTab(i);
 }
@@ -563,17 +567,17 @@ $('#tree').addEventListener('click', e => {
     renderTree();
   } else {
     selectedFolder = dirname(p);
-    openLibFile(p);
+    openLibFile(p, e.ctrlKey || e.metaKey);
     if (window.innerWidth <= 700) toggleSide(false);
   }
 });
-async function openLibFile(path){
+async function openLibFile(path, forceNew){
   try {
     const k = await findTab({ kind: 'lib', path });
     if (k >= 0) await selectTab(k);
     else {
       const t = await lib.fs.read(path), mtime = await lib.fs.mtime(path).catch(() => 0);
-      await openInTab(t, { kind: 'lib', name: basename(path), path, mtime });
+      await openInTab(t, { kind: 'lib', name: basename(path), path, mtime }, forceNew);
     }
     for (let d = dirname(path); d; d = dirname(d)) expanded.add(d);
     renderTree();
@@ -587,7 +591,7 @@ async function createNote(dir, name){
   await openLibFile(p);
   return p;
 }
-async function openWiki(target){
+async function openWiki(target, forceNew){
   if (!lib){ toast('Wiki links work inside a library (open the sidebar)'); return; }
   const [name, hash] = target.split('#');
   let p = resolveWiki(name);
@@ -597,7 +601,7 @@ async function openWiki(target){
     p = await createNote('', name.trim());
     return;
   }
-  if (p !== cur.path) await openLibFile(p);
+  if (p !== cur.path) await openLibFile(p, forceNew);
   if (hash){
     const h = heads.find(x => slug(x.t) === slug(hash));
     if (h) jumpToLine(h.line);
@@ -720,11 +724,11 @@ function qsFilter(){
   $('#qsList').innerHTML = qsHits.map((f, k) => `<button data-k="${k}"${k ? '' : ' class="on"'}>${esc(f.name.replace(/\.md$/i, ''))}<small>${esc(dirname(f.path) || '/')}</small></button>`).join('') + create;
   if (!qsHits.length && create) $('#qsList').firstChild.classList.add('on');
 }
-function qsPick(b){
+function qsPick(b, forceNew){
   $('#qs').hidden = true;
   if (!b) return;
   if (b.dataset.new) flush().then(() => createNote(selectedDir(), $('#qsInput').value.trim()));
-  else openLibFile(qsHits[+b.dataset.k].path);
+  else openLibFile(qsHits[+b.dataset.k].path, forceNew);
 }
 $('#qsInput').addEventListener('input', qsFilter);
 $('#qsInput').addEventListener('keydown', e => {
@@ -734,7 +738,7 @@ $('#qsInput').addEventListener('keydown', e => {
     items[qsOn]?.classList.remove('on');
     qsOn = (qsOn + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % Math.max(1, items.length);
     items[qsOn]?.classList.add('on'); items[qsOn]?.scrollIntoView({ block: 'nearest' });
-  } else if (e.key === 'Enter'){ e.preventDefault(); qsPick(items[qsOn]); }
+  } else if (e.key === 'Enter'){ e.preventDefault(); qsPick(items[qsOn], e.ctrlKey || e.metaKey); }
   else if (e.key === 'Escape'){ e.preventDefault(); $('#qs').hidden = true; view.focus(); }
 });
 $('#qsList').addEventListener('click', e => qsPick(e.target.closest('button')));
@@ -922,7 +926,7 @@ pv.addEventListener('click', e => {
   const a = e.target.closest('a[href]');
   if (!a) return;
   e.preventDefault();
-  if (a.classList.contains('wikilink')) openWiki(a.dataset.wiki + (a.dataset.hash ? '#' + a.dataset.hash : ''));
+  if (a.classList.contains('wikilink')) openWiki(a.dataset.wiki + (a.dataset.hash ? '#' + a.dataset.hash : ''), e.ctrlKey || e.metaKey);
   else openLink(a.getAttribute('href'));
 });
 pv.addEventListener('scroll', () => {
@@ -1098,6 +1102,18 @@ function setReadable(on){
 }
 setReadable(!!store.get('readable'));
 $('#bReadable').addEventListener('click', () => { setReadable(!document.body.classList.contains('readable')); syncScroll('ed'); });
+$('#bNewTabs').setAttribute('aria-pressed', String(newTabs));
+$('#bNewTabs').addEventListener('click', () => {
+  newTabs = !newTabs; store.set('newtabs', newTabs ? '1' : '');
+  $('#bNewTabs').setAttribute('aria-pressed', String(newTabs));
+  toast(newTabs ? 'Notes open in a new tab' : 'Notes open in the current tab (Ctrl+click for a new one)');
+});
+// middle-click a note in the file tree: new tab
+$('#tree').addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); });
+$('#tree').addEventListener('auxclick', e => {
+  const b = e.target.closest('.row');
+  if (b && e.button === 1 && !b.dataset.dir){ e.preventDefault(); openLibFile(b.dataset.path, true); }
+});
 $('#aboutLine').textContent = `Markpad ${VERSION} · ${host.kind === 'browser' ? 'web' : host.kind}`;
 
 document.addEventListener('keydown', e => {
@@ -1191,7 +1207,7 @@ if (host.onDropPaths) host.onDropPaths(async paths => {
     await openInTab(await host.readRef(p), { kind: 'loose', name, ref: p }); addRecent({ name, ref: p });
   } catch (e){ toast('Could not open: ' + (e.message || e)); }
 });
-if (host.onOpenFile) host.onOpenFile(async f => { await openInTab(f.text, { kind: 'loose', name: f.name, ref: f.ref }); addRecent({ name: f.name, ref: f.ref }); });
+if (host.onOpenFile) host.onOpenFile(async f => { await openInTab(f.text, { kind: 'loose', name: f.name, ref: f.ref }, true); addRecent({ name: f.name, ref: f.ref }); });
 
 (async () => {
   recent = (await kvGet('recent')) || []; showRecent();
@@ -1228,7 +1244,7 @@ if (host.onOpenFile) host.onOpenFile(async f => { await openInTab(f.text, { kind
   }
   useTab(Math.min(Math.max(sess?.active ?? 0, 0), tabs.length - 1));
   const start = await host.startupFile().catch(() => null);
-  if (start){ await openInTab(start.text, { kind: 'loose', name: start.name, ref: start.ref }); addRecent({ name: start.name, ref: start.ref }); }
+  if (start){ await openInTab(start.text, { kind: 'loose', name: start.name, ref: start.ref }, true); addRecent({ name: start.name, ref: start.ref }); }
   updateCursor();
   view.focus();
 })();

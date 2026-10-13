@@ -251,7 +251,7 @@ function livePreview(opts){
         const a = e.target.closest && e.target.closest('.cm-lp-link');
         if (!a || e.button !== 0 || e.shiftKey) return false;
         e.preventDefault();
-        if (a.dataset.wiki != null) opts.openWiki(a.dataset.wiki);
+        if (a.dataset.wiki != null) opts.openWiki(a.dataset.wiki, e.ctrlKey || e.metaKey);
         else opts.openLink(a.dataset.href);
         return true;
       },
