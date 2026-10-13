@@ -68,7 +68,7 @@ class ImgWidget extends WidgetType {
   ignoreEvent(){ return false; }
 }
 class CheckWidget extends WidgetType {
-  constructor(on){ super(); this.on = on; }
+  constructor(on, opts){ super(); this.on = on; this.opts = opts; }
   eq(o){ return o.on === this.on; }
   toDOM(view){
     const c = document.createElement('input');
@@ -77,6 +77,7 @@ class CheckWidget extends WidgetType {
       e.preventDefault();
       const pos = view.posAtDOM(c);
       view.dispatch({ changes: { from: pos + 1, to: pos + 2, insert: this.on ? ' ' : 'x' } });
+      this.opts.afterTask?.(pos, !this.on);
     });
     return c;
   }
@@ -190,9 +191,12 @@ function buildLive(view, opts, cache){
           else widget(n.from, n.to, new TextWidget('•', 'cm-lp-bullet'));
           return;
         }
-        case 'TaskMarker':
-          if (!shown(n.from, n.to)) widget(n.from, n.to, new CheckWidget(/x/i.test(doc.sliceString(n.from, n.to))));
+        case 'TaskMarker': {
+          const done = /x/i.test(doc.sliceString(n.from, n.to));
+          if (done && n.parent) mark(n.to, n.parent.to, null, 'cm-lp-done');   // ticked: crossed out (if that option is on)
+          if (!shown(n.from, n.to)) widget(n.from, n.to, new CheckWidget(done, opts));
           return;
+        }
         case 'Image': {
           if (shown(n.from, n.to)) return false;
           const url = kid(n, 'URL'), label = kid(n, 'LinkLabel'), marks = kids(n, 'LinkMark');
@@ -306,8 +310,8 @@ export function createEditor(parent, opts){
     view,
     setLive(on){
       liveOn = on;
-      view.dispatch({ effects: live.reconfigure(on ? [livePreview(opts), liveTables] : []) });
-      view.dom.classList.toggle('cm-live', on);
+      // the cm-live class (reading font, heading sizes) must come through CodeMirror, which owns the editor's classes
+      view.dispatch({ effects: live.reconfigure(on ? [livePreview(opts), liveTables, EditorView.editorAttributes.of({ class: 'cm-live' })] : []) });
     },
     // a new document gets a fresh undo history
     reset(text){ ed.swap(ed.newState(text)); },

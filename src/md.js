@@ -147,7 +147,7 @@ function blocks(lines, tight, top){
           pre = `<input type="checkbox" class="task"${t[1] !== ' ' ? ' checked' : ''} title="Click to toggle">`;
           txt = [txt[0].slice(t[0].length), ...txt.slice(1)];
         }
-        return `<li${t ? ' class="task-item"' : ''}>${pre}${blocks(txt, !loose)}</li>`;
+        return `<li${t ? ` class="task-item${t[1] !== ' ' ? ' done' : ''}"` : ''}>${pre}${blocks(txt, !loose)}</li>`;
       });
       const tag = ordered ? 'ol' : 'ul';
       out.push(`<${tag}${ordered && start !== 1 ? ` start="${start}"` : ''}${hasTask ? ' class="contains-task"' : ''}>` + lis.join('') + `</${tag}>`);

@@ -5,7 +5,7 @@ import { markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } fro
 import { createEditor } from './editor.js';
 import { host } from './host.js';
 
-const VERSION = '2.1.2';
+const VERSION = '2.1.3';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -901,6 +901,67 @@ document.querySelectorAll('.fmt button').forEach(b => b.addEventListener('click'
   FORMATS[b.dataset.f]();
 }));
 
+/* ---------------- Checklists (like Google Keep / Obsidian) ---------------- */
+const TASK_RE = /^(\s*)(?:[-*+]|\d{1,9}[.)])[ \t]+\[([ xX])\]/;
+let moveDone = store.get('movedone') === '1';
+function setCrossOut(on){
+  document.body.classList.toggle('done-strike', on); store.set('nostrike', on ? '' : '1');
+  $('#bStrike').setAttribute('aria-pressed', String(on));
+}
+// lines that belong to the item on line i: the item itself plus anything indented under it
+function itemEnd(lines, i){
+  const ind = lines[i].match(/^\s*/)[0].length;
+  let j = i + 1;
+  while (j < lines.length && lines[j].trim() && lines[j].match(/^\s*/)[0].length > ind) j++;
+  return j;
+}
+// Keep-style: a ticked item drops to the end of its list; an unticked one goes back above the ticked ones
+function afterTask(pos, nowDone){
+  if (!moveDone) return;
+  const doc = view.state.doc, lines = doc.toString().split('\n'), i = doc.lineAt(pos).number - 1;
+  const ind = lines[i].match(/^\s*/)[0].length, sameLevel = l => TASK_RE.test(l) && l.match(/^\s*/)[0].length === ind;
+  let first = i;   // first item of this list at this level
+  while (first > 0 && lines[first - 1].trim() && lines[first - 1].match(/^\s*/)[0].length >= ind && (sameLevel(lines[first - 1]) || lines[first - 1].match(/^\s*/)[0].length > ind)) first--;
+  let last = i;    // line after the last item
+  while (last < lines.length && lines[last].trim() && (sameLevel(lines[last]) || lines[last].match(/^\s*/)[0].length > ind)) last = sameLevel(lines[last]) ? itemEnd(lines, last) : last + 1;
+  const end = itemEnd(lines, i), block = lines.slice(i, end);
+  const rest = [...lines.slice(first, i), ...lines.slice(end, last)];
+  let at;
+  if (nowDone) at = rest.length;
+  else { at = rest.findIndex(l => sameLevel(l) && /\[[xX]\]/.test(l)); if (at < 0) at = rest.length; }
+  rest.splice(at, 0, ...block);
+  const from = doc.line(first + 1).from, to = doc.line(last).to;
+  const insert = rest.join('\n');
+  if (insert !== lines.slice(first, last).join('\n')) view.dispatch({ changes: { from, to, insert }, userEvent: 'input' });
+}
+function eachTask(fn){ // fn(line, match) → new line or null to delete it
+  const lines = view.state.doc.toString().split('\n'), out = [];
+  let inFence = false, changed = 0;
+  for (let i = 0; i < lines.length; i++){
+    const l = lines[i];
+    if (FENCE_RE.test(l)) inFence = !inFence;
+    const m = !inFence && l.match(TASK_RE);
+    if (!m){ out.push(l); continue; }
+    const r = fn(l, m);
+    if (r === null){ const e = itemEnd(lines, i); i = e - 1; changed++; continue; }
+    if (r !== l) changed++;
+    out.push(r);
+  }
+  if (changed) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: out.join('\n') }, userEvent: 'input' });
+  return changed;
+}
+function uncheckAll(){
+  const n = eachTask(l => l.replace(/\[[xX]\]/, '[ ]'));
+  toast(n ? `Unchecked ${n}` : 'Nothing to uncheck');
+}
+async function deleteDone(){
+  const count = (view.state.doc.toString().match(/^\s*(?:[-*+]|\d{1,9}[.)])[ \t]+\[[xX]\]/gm) || []).length;
+  if (!count){ toast('No completed items'); return; }
+  if (!(await confirmBox(`Delete ${count} completed item${count > 1 ? 's' : ''}? (Ctrl+Z brings them back)`, 'Delete'))) return;
+  eachTask((l, m) => /x/i.test(m[2]) ? null : l);
+  toast(`Deleted ${count}`);
+}
+
 /* ---------------- Preview interactions ---------------- */
 function toggleTask(n){
   const lines = text().split('\n'); let inFence = false, k = 0, off = 0;
@@ -912,6 +973,7 @@ function toggleTask(n){
         if (k === n){
           const at = off + m[1].length, keep = pv.scrollTop;
           view.dispatch({ changes: { from: at, to: at + 1, insert: m[2] === ' ' ? 'x' : ' ' } });
+          afterTask(at, m[2] === ' ');
           render(); pv.scrollTop = keep;
           return;
         }
@@ -1103,6 +1165,16 @@ function setReadable(on){
 }
 setReadable(!!store.get('readable'));
 $('#bReadable').addEventListener('click', () => { setReadable(!document.body.classList.contains('readable')); syncScroll('ed'); });
+setCrossOut(!store.get('nostrike'));
+$('#bStrike').addEventListener('click', () => setCrossOut(!document.body.classList.contains('done-strike')));
+$('#bMoveDone').setAttribute('aria-pressed', String(moveDone));
+$('#bMoveDone').addEventListener('click', () => {
+  moveDone = !moveDone; store.set('movedone', moveDone ? '1' : '');
+  $('#bMoveDone').setAttribute('aria-pressed', String(moveDone));
+  toast(moveDone ? 'Ticked items move to the bottom of their list' : 'Ticked items stay where they are');
+});
+$('#bUncheck').addEventListener('click', closeMenu(uncheckAll));
+$('#bDelDone').addEventListener('click', closeMenu(deleteDone));
 $('#bNewTabs').setAttribute('aria-pressed', String(newTabs));
 $('#bNewTabs').addEventListener('click', () => {
   newTabs = !newTabs; store.set('newtabs', newTabs ? '1' : '');
@@ -1175,6 +1247,7 @@ host.onClose(async () => { await flush(); saveSession(true); await new Promise(r
 /* ---------------- Boot ---------------- */
 cm = createEditor(pane, {
   command: name => FORMATS[name](),
+  afterTask,
   createFindPanel,
   onPaste,
   onDrop: e => { if (e.dataTransfer?.types.includes('Files')){ onDropFiles(e); return true; } return false; },

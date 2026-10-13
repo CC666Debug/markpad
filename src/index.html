@@ -150,6 +150,8 @@ body:not(.readable) #preview.md{max-width:none}
 .cm-live .cm-lp-code{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:.88em;background:var(--code-bg)}
 .cm-live .cm-lp-quote{border-left:4px solid var(--quote);color:var(--muted)}
 .cm-lp-link{color:var(--accent);cursor:pointer;text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--accent) 40%,transparent);text-underline-offset:3px}
+body.done-strike .cm-lp-done{text-decoration:line-through;opacity:.55}
+body.done-strike .md li.done{text-decoration:line-through;color:var(--muted)}
 .cm-lp-u{text-decoration:underline;text-underline-offset:3px}
 .cm-lp-bullet{display:inline-block;width:1.1em;color:var(--muted);font-weight:700}
 .cm-lp-task{margin:0 .45em 0 0;vertical-align:-.1em;accent-color:var(--accent);cursor:pointer;width:1em;height:1em}
@@ -251,6 +253,12 @@ body.focus .cm-scroller{font-size:17px!important}
       <button id="bExport">Export as HTML</button>
       <button id="bPrint">Print / Save as PDF</button>
       <button id="bAutosave" class="tog" aria-pressed="true">Auto-save library notes</button>
+      <div class="sub">Checklists</div>
+      <button id="bStrike" class="tog" aria-pressed="true">Cross out completed items</button>
+      <button id="bMoveDone" class="tog" aria-pressed="false" title="Like Google Keep: ticked items drop to the end of their list">Move completed items to the bottom</button>
+      <button id="bUncheck">Uncheck all</button>
+      <button id="bDelDone">Delete completed items…</button>
+      <div class="sub">Settings</div>
       <button id="bNewTabs" class="tog" aria-pressed="false" title="Off: a note replaces the current tab (Ctrl+click or middle-click for a new tab)">Open notes in a new tab</button>
       <button id="bReadable" class="tog" aria-pressed="false" title="On: text stays in a comfortable column. Off: text fills the window.">Readable line length</button>
       <div id="recentBox"></div>
