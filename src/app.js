@@ -5,7 +5,7 @@ import { markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } fro
 import { createEditor } from './editor.js';
 import { host } from './host.js';
 
-const VERSION = '2.1.1';
+const VERSION = '2.1.2';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -873,6 +873,7 @@ const FORMATS = {
   bold:   () => wrap('**', '**', 'bold text'),
   italic: () => wrap('*', '*', 'italic text'),
   strike: () => wrap('~~', '~~', 'text'),
+  underline: () => wrap('<u>', '</u>', 'text'),
   code:   () => { const r = sel(); text().slice(r.from, r.to).includes('\n') ? wrap('```\n', '\n```', '') : wrap('`', '`', 'code'); },
   heading: () => mapLines(ls => ls.map(l => {
     const m = l.match(/^(#{1,6})\s+/);

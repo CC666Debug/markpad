@@ -155,6 +155,16 @@ function buildLive(view, opts, cache){
         return;
       }
       switch (name){
+        case 'HTMLTag': {
+          // <u>underline</u>: hide the tags and underline what's between them
+          if (doc.sliceString(n.from, n.to).toLowerCase() !== '<u>') return;
+          let end = n.nextSibling;
+          while (end && !(end.name === 'HTMLTag' && doc.sliceString(end.from, end.to).toLowerCase() === '</u>')) end = end.nextSibling;
+          if (!end) return;
+          mark(n.to, end.from, null, 'cm-lp-u');
+          if (!shown(n.from, end.to)){ hide(n.from, n.to); hide(end.from, end.to); }
+          return;
+        }
         case 'EmphasisMark': case 'StrikethroughMark': case 'HighlightMark':
           if (!shown(n.from, n.to)) hide(n.from, n.to);
           return;
@@ -281,7 +291,7 @@ export function createEditor(parent, opts){
       syntaxHighlighting(style),
       search({ top: true, createPanel: opts.createFindPanel }),
       keymap.of([
-        { key: 'Mod-b', run: cmd('bold') }, { key: 'Mod-i', run: cmd('italic') }, { key: 'Mod-k', run: cmd('link') },
+        { key: 'Mod-b', run: cmd('bold') }, { key: 'Mod-i', run: cmd('italic') }, { key: 'Mod-u', run: cmd('underline') }, { key: 'Mod-k', run: cmd('link') },
         { key: 'Tab', run: tab, shift: indentLess },
         ...markdownKeymap, ...historyKeymap, ...defaultKeymap,
       ]),

@@ -150,6 +150,7 @@ body:not(.readable) #preview.md{max-width:none}
 .cm-live .cm-lp-code{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:.88em;background:var(--code-bg)}
 .cm-live .cm-lp-quote{border-left:4px solid var(--quote);color:var(--muted)}
 .cm-lp-link{color:var(--accent);cursor:pointer;text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--accent) 40%,transparent);text-underline-offset:3px}
+.cm-lp-u{text-decoration:underline;text-underline-offset:3px}
 .cm-lp-bullet{display:inline-block;width:1.1em;color:var(--muted);font-weight:700}
 .cm-lp-task{margin:0 .45em 0 0;vertical-align:-.1em;accent-color:var(--accent);cursor:pointer;width:1em;height:1em}
 .cm-lp-hr{display:inline-block;width:100%;border-top:1px solid var(--border);vertical-align:middle}
@@ -260,6 +261,7 @@ body.focus .cm-scroller{font-size:17px!important}
   <div class="fmt">
     <button data-f="bold" title="Bold (Ctrl+B)"><b>B</b></button>
     <button data-f="italic" title="Italic (Ctrl+I)"><i style="font-family:Georgia,serif">I</i></button>
+    <button data-f="underline" title="Underline (Ctrl+U)"><u>U</u></button>
     <button data-f="strike" title="Strikethrough"><s>S</s></button>
     <button data-f="heading" title="Heading (cycles H1–H6)"><b>H</b></button>
     <button data-f="quote" title="Quote">❝</button>
@@ -363,7 +365,7 @@ A small Markdown editor. It works offline, and your notes are plain `.md` files 
 
 | Action | Keys |
 | --- | --- |
-| Bold / Italic / Link | `Ctrl+B` / `Ctrl+I` / `Ctrl+K` |
+| Bold / Italic / Underline / Link | `Ctrl+B` / `Ctrl+I` / `Ctrl+U` / `Ctrl+K` |
 | Save / Save as | `Ctrl+S` / `Ctrl+Shift+S` |
 | New note / Open file | `Ctrl+N` / `Ctrl+O` |
 | New tab / Close tab | `Ctrl+T` / `Ctrl+W` (middle-click a tab also closes it) |
@@ -376,7 +378,7 @@ A small Markdown editor. It works offline, and your notes are plain `.md` files 
 
 ## What it supports
 
-- [x] Headings, **bold**, *italic*, ~~strikethrough~~, ==highlight==, `inline code`
+- [x] Headings, **bold**, *italic*, <u>underline</u>, ~~strikethrough~~, ==highlight==, `inline code`
 - [x] Lists, nested lists, and task lists
   - Press Enter in a list and the next bullet appears for you
 - [ ] Click this checkbox to tick it off

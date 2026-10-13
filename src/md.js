@@ -62,6 +62,7 @@ function inline(s){
   });
   s = s.replace(/&lt;((?:https?|mailto):[^\s]+?)&gt;/g, (m,u) => put(`<a href="${u}">${u}</a>`));
   s = s.replace(/(^|[\s(])(https?:\/\/[^\s<]*[^\s<.,;:!?)\]'"])/g, (m,p,u) => p + put(`<a href="${u}">${u}</a>`));
+  s = s.replace(/&lt;u&gt;([\s\S]*?)&lt;\/u&gt;/g, '<u>$1</u>');   // underline, written as <u>…</u> like in Obsidian
   s = s.replace(/\*\*\*(?=\S)([\s\S]*?\S)\*\*\*/g, '<strong><em>$1</em></strong>');
   s = s.replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/(^|[^\w])__(?=\S)([\s\S]*?\S)__(?!\w)/g, '$1<strong>$2</strong>');
