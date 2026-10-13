@@ -3,9 +3,10 @@ import { SearchQuery, setSearchQuery, getSearchQuery, findNext, findPrevious, re
   openSearchPanel, closeSearchPanel, searchPanelOpen } from '@codemirror/search';
 import { TAG_RE, markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } from './md.js';
 import { createEditor } from './editor.js';
+import { makeZip, readZip } from './zip.js';
 import { host } from './host.js';
 
-const VERSION = '2.1.8';
+const VERSION = '2.1.9';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -33,11 +34,11 @@ function toast(msg){
 }
 
 /* ---------------- Dialogs (no browser prompt/confirm, so they look the same in every edition) ---------------- */
-function ask(msg, { input = null, buttons = [{ label: 'Cancel', value: null }, { label: 'OK', value: true, primary: true }] } = {}){
+function ask(msg, { input = null, password = false, buttons = [{ label: 'Cancel', value: null }, { label: 'OK', value: true, primary: true }] } = {}){
   return new Promise(res => {
     const box = $('#ask'), inp = $('#askInput'), btns = $('#askBtns');
     $('#askMsg').textContent = msg;
-    inp.hidden = input == null; inp.value = input ?? '';
+    inp.hidden = input == null; inp.value = input ?? ''; inp.type = password ? 'password' : 'text';
     btns.innerHTML = '';
     const done = v => { box.hidden = true; document.removeEventListener('keydown', key, true); res(v); };
     const primary = buttons.find(b => b.primary) || buttons[buttons.length - 1];
@@ -748,6 +749,59 @@ async function applyRelinks(plan, from, to){
   }
   if (n) toast(`Updated links in ${n} note${n > 1 ? 's' : ''}`);
 }
+/* ---------------- Back up & restore: the whole library as one zip, optionally with a password ---------------- */
+const today = () => new Date().toLocaleDateString('sv');   // 2026-10-13
+async function askPassword(msg, label){
+  const go = await ask(msg, { input: '', password: true, buttons: [{ label: 'Cancel', value: null }, { label, value: 'go', primary: true }] });
+  return go === 'go' ? $('#askInput').value : null;
+}
+async function backupLibrary(){
+  if (!lib){ toggleSide(true); toast('Pick a library first'); return; }
+  const pw = await askPassword(`Back up “${lib.desc.name}” as a zip.\n\nPassword (optional, leave empty for none). It can't be recovered if you forget it.`, 'Back up');
+  if (pw == null) return;
+  if (pw){
+    if (!/^[\x20-\x7e]+$/.test(pw)){ toast('Use plain keyboard letters, numbers and symbols (no accents or emoji) so other zip apps can open it'); return; }
+    if ((await askPassword('Type the password again', 'Back up')) !== pw){ toast("The passwords didn't match"); return; }
+  }
+  await flush(); stash();
+  toast('Making the backup…');
+  try {
+    const te = new TextEncoder(), files = [];
+    for (const f of allFiles()){
+      const t = tabs.find(t => t.cur.kind === 'lib' && t.cur.path === f.path);
+      files.push({ name: f.path, data: t ? te.encode(t.state.doc.toString()) : isNote(f.name) ? te.encode(await lib.fs.read(f.path)) : await lib.fs.readBin(f.path) });
+    }
+    if (!files.length){ toast('This library has no notes yet'); return; }
+    const zip = await makeZip(files, pw);
+    const name = `Markpad backup - ${lib.desc.name.replace(/[\\/:*?"<>|]/g, '-')} - ${today()}.zip`;
+    if (await host.shareFile(name, zip)) toast(`Backup ready: ${files.length} file${files.length > 1 ? 's' : ''}${pw ? ', with a password' : ''}`);
+  } catch (e){ toast("Couldn't back up: " + (e.message || e)); }
+}
+async function restoreBackup(){
+  if (!lib){ toggleSide(true); toast('Pick a library first'); return; }
+  let z;
+  try { z = await host.openZip(); } catch (e){ toast("Couldn't open that file: " + (e.message || e)); return; }
+  if (!z) return;
+  let files, pw = null;
+  for (;;){
+    try { files = await readZip(z.bytes, pw); break; }
+    catch (e){
+      if (e.message !== 'password'){ toast("Couldn't restore: " + e.message); return; }
+      pw = await askPassword(pw == null ? `“${z.name}” has a password` : 'Wrong password. Try again', 'Restore');
+      if (pw == null) return;
+    }
+  }
+  files = files.filter(f => SHOWN_FILE.test(f.name) && !f.name.split('/').some(p => p === '..' || p.startsWith('.')));
+  if (!files.length){ toast('No notes or pictures in that zip'); return; }
+  try {
+    const dir = await uniquePath('', 'Restored ' + today());
+    for (const f of files) await lib.fs.writeBin(normPath(joinPath(dir, f.name.replace(/^\/+/, ''))), f.data);
+    expanded.add(dir); selectedFolder = dir;
+    await refreshTree();
+    toast(`Restored ${files.length} file${files.length > 1 ? 's' : ''} into “${dir}”`);
+  } catch (e){ toast("Couldn't restore: " + (e.message || e)); }
+}
+const SHOWN_FILE = /\.(md|markdown|mdown|mkd|txt|png|jpe?g|gif|webp|svg|bmp|avif)$/i;
 async function trashPath(p, isDir){
   if (!(await confirmBox(`Move ${basename(p)}${isDir ? ' and everything in it' : ''} to the library's .trash folder?`, 'Move to trash'))) return;
   try {
@@ -1313,6 +1367,8 @@ $('#bSave').addEventListener('click', () => save(false));
 $('#bSaveAs').addEventListener('click', closeMenu(() => save(true)));
 $('#bSwitcher').addEventListener('click', closeMenu(openSwitcher));
 $('#bSearch').addEventListener('click', closeMenu(() => openSearch()));
+$('#bBackup').addEventListener('click', closeMenu(backupLibrary));
+$('#bRestore').addEventListener('click', closeMenu(restoreBackup));
 $('#bExport').addEventListener('click', closeMenu(exportHtml));
 $('#bPrint').addEventListener('click', closeMenu(() => { pv.innerHTML = markdown(text()); fillPreview(); setTimeout(() => host.print(), 300); }));
 $('#bAutosave').setAttribute('aria-pressed', String(autosave));
@@ -1503,4 +1559,4 @@ window.__mpBack = () => {
 
 // for the automated tests
 window.__markpad = { get view(){ return view; }, get cur(){ return cur; }, get lib(){ return lib; }, get tabs(){ return tabs; }, get active(){ return active; },
-  openLibrary, openLibFile, setView, insertImages, toggleSide, showTab, openInTab, selectTab, closeTab, newTab, renamePath, host };
+  openLibrary, openLibFile, setView, insertImages, toggleSide, showTab, openInTab, selectTab, closeTab, newTab, renamePath, host, backupLibrary, restoreBackup };

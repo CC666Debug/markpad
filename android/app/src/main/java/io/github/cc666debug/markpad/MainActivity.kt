@@ -18,6 +18,7 @@ import android.widget.FrameLayout
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -121,6 +122,15 @@ class MainActivity : AppCompatActivity() {
                         JSONObject().put("uri", u.toString()).put("name", displayName(u)).toString()
                     }
                 }
+                "openZip" -> pick(id, Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"
+                    putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+                }) { d ->
+                    d.data?.let { u ->
+                        val bytes = contentResolver.openInputStream(u)!!.use { it.readBytes() }
+                        JSONObject().put("name", displayName(u)).put("data", Base64.encodeToString(bytes, Base64.NO_WRAP)).toString()
+                    }
+                }
                 "pickFolder" -> pick(id, Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)) { d ->
                     d.data?.let { u ->
                         contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
@@ -135,6 +145,8 @@ class MainActivity : AppCompatActivity() {
                         "writeUri" -> { writeUri(Uri.parse(a.getString("uri")), a.getString("text")); null }
                         "list" -> lib(a).list().toString()
                         "read" -> JSONObject.quote(lib(a).read(a.getString("path")))
+                        "readB64" -> JSONObject.quote(lib(a).open(a.getString("path")).use { Base64.encodeToString(it.readBytes(), Base64.NO_WRAP) })
+                        "share" -> { share(a.getString("name"), Base64.decode(a.getString("data"), Base64.DEFAULT)); null }
                         "write" -> { lib(a).write(a.getString("path"), a.getString("text").toByteArray()); null }
                         "writeB64" -> { lib(a).write(a.getString("path"), Base64.decode(a.getString("data"), Base64.DEFAULT)); null }
                         "mkdir" -> { lib(a).dir(a.getString("path"), true); null }
@@ -197,6 +209,18 @@ class MainActivity : AppCompatActivity() {
             isAppearanceLightStatusBars = !dark
             isAppearanceLightNavigationBars = !dark
         }
+    }
+
+    // a backup zip goes to Android's share menu (Drive, Gmail, Save to Files, …)
+    private fun share(name: String, bytes: ByteArray) {
+        val dir = File(cacheDir, "share").apply { deleteRecursively(); mkdirs() }
+        val f = File(dir, name.replace(Regex("[\\\\/:*?\"<>|]"), "-")).apply { writeBytes(bytes) }
+        val uri = FileProvider.getUriForFile(this, "$packageName.files", f)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "application/zip"; putExtra(Intent.EXTRA_STREAM, uri); putExtra(Intent.EXTRA_TITLE, f.name)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runOnUiThread { startActivity(Intent.createChooser(send, f.name)) }
     }
 
     private fun print() {

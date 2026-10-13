@@ -7,10 +7,14 @@
 // Library filesystem (host.lib(desc)):
 //   list() → [{name, path, dir, children?}]   read(p) → text   write(p, text)   writeBin(p, Uint8Array)
 //   mkdir(p)   rename(from, to)   trash(p) (moves into .trash/, like Obsidian)   mtime(p) → ms   url(p) → src for <img>
+//   readBin(p) → Uint8Array
+//
+// Backups: shareFile(name, bytes) hands a file to the share menu / a Save dialog; openZip() → { name, bytes }
 
 const MD_TYPES = [{ description: 'Markdown', accept: { 'text/markdown': ['.md', '.markdown', '.mdown', '.mkd', '.txt'] } }];
 const SHOWN = /\.(md|markdown|mdown|mkd|txt|png|jpe?g|gif|webp|svg|bmp|avif)$/i;
 const sortTree = list => list.sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+const unb64 = s => { const raw = atob(s), b = new Uint8Array(raw.length); for (let i = 0; i < raw.length; i++) b[i] = raw.charCodeAt(i); return b; };
 const b64 = bytes => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s); };
 
 function download(name, content, type){
@@ -69,6 +73,7 @@ function browserHost(){
     return {
       list: () => walk(root, ''),
       read: async p => (await (await fileOf(p)).getFile()).text(),
+      readBin: async p => new Uint8Array(await (await (await fileOf(p)).getFile()).arrayBuffer()),
       write: async (p, t) => writeHandle(await fileOf(p, true), t),
       writeBin: async (p, bytes) => writeHandle(await fileOf(p, true), bytes),
       mkdir: p => dirOf(p, true),
@@ -119,6 +124,23 @@ function browserHost(){
     setTitle: t => { document.title = t; },
     onClose(){ /* beforeunload is wired up by the app */ },
     openExternal: url => window.open(url, '_blank', 'noopener'),
+    // phones get the share menu; computers get a normal download
+    async shareFile(name, bytes){
+      const file = new File([bytes], name, { type: 'application/zip' });
+      if (navigator.canShare?.({ files: [file] }) && matchMedia('(pointer:coarse)').matches){
+        try { await navigator.share({ files: [file] }); return true; } catch (e){ if (e.name === 'AbortError') return false; }
+      }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(file); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      return true;
+    },
+    openZip: () => new Promise(res => {
+      const i = document.createElement('input');
+      i.type = 'file'; i.accept = '.zip,application/zip';
+      i.onchange = async () => { const f = i.files[0]; res(f ? { name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) } : null); };
+      i.click();
+    }),
   };
 }
 
@@ -132,6 +154,7 @@ function desktopHost(){
     return {
       list: () => invoke('list_tree', { root }),
       read: path => invoke('read_text', { root, path }),
+      readBin: async path => unb64(await invoke('read_b64', { path: root.replace(/[\\/]$/, '') + '/' + path })),
       write: (path, text) => invoke('write_text', { root, path, text }),
       writeBin: (path, bytes) => invoke('write_b64', { root, path, data: b64(bytes) }),
       mkdir: path => invoke('make_dir', { root, path }),
@@ -193,9 +216,17 @@ function desktopHost(){
         if (t === 'drop') fn(e.payload.paths);
       });
     },
+    async shareFile(n, bytes){
+      const p = await dialog.save({ defaultPath: n, filters: [{ name: 'Zip', extensions: ['zip'] }] });
+      if (p) await invoke('write_b64', { root: '', path: p, data: b64(bytes) });
+      return !!p;
+    },
+    async openZip(){
+      const p = await dialog.open({ multiple: false, directory: false, filters: [{ name: 'Zip', extensions: ['zip'] }] });
+      return p ? { name: name(p), bytes: unb64(await invoke('read_b64', { path: p })) } : null;
+    },
     async readFileAsFile(p){
-      const raw = atob(await invoke('read_b64', { path: p })), bytes = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      const bytes = unb64(await invoke('read_b64', { path: p }));
       const ext = p.split('.').pop().toLowerCase();
       return new File([bytes], name(p), { type: 'image/' + (ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext) });
     },
@@ -221,6 +252,7 @@ function androidHost(){
     return {
       list: () => call('list', { root }),
       read: path => call('read', { root, path }),
+      readBin: async path => unb64(await call('readB64', { root, path })),
       write: (path, text) => call('write', { root, path, text }),
       writeBin: (path, bytes) => call('writeB64', { root, path, data: b64(bytes) }),
       mkdir: path => call('mkdir', { root, path }),
@@ -249,6 +281,8 @@ function androidHost(){
     onClose(){},
     openExternal: url => call('openExternal', { url }),
     bars: dark => call('bars', { dark }),
+    shareFile: async (name, bytes) => { await call('share', { name, data: b64(bytes) }); return true; },
+    async openZip(){ const r = await call('openZip'); return r && { name: r.name, bytes: unb64(r.data) }; },
     onOpenFile(fn){ window.__mpOpenFile = r => fn({ name: r.name, ref: r.uri, text: r.text }); },
   };
 }

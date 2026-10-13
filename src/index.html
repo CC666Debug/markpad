@@ -137,6 +137,7 @@ body:not(.readable) #preview.md{max-width:none}
 .cm-focused .cm-selectionBackground{background:color-mix(in srgb,var(--accent) 30%,transparent)!important}
 .cm-tag,.md a.tag{color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,transparent);border-radius:9px;padding:0 5px;text-decoration:none}
 .cm-lp-tag{cursor:pointer}
+#askMsg{white-space:pre-line}
 #qsList mark{background:var(--mark);color:inherit;border-radius:2px}
 .cm-mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace}
 .cm-panels{background:var(--panel)!important;color:var(--text)!important;border:0!important}
@@ -259,6 +260,8 @@ body.focus .cm-scroller{font-size:17px!important}
       <button id="bSearch">Search in notes / #tags…<span class="key">Ctrl+Shift+P</span></button>
       <button id="bExport">Export as HTML</button>
       <button id="bPrint">Print / Save as PDF</button>
+      <button id="bBackup" title="All notes and pictures of the open library in one zip, optionally with a password">Back up notes…</button>
+      <button id="bRestore" title="Unpacks a backup zip into a new “Restored” folder; nothing is overwritten">Restore from backup…</button>
       <button id="bAutosave" class="tog" aria-pressed="true">Auto-save library notes</button>
       <div class="sub">Checklists</div>
       <button id="bStrike" class="tog" aria-pressed="true">Cross out completed items</button>
