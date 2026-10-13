@@ -10,7 +10,7 @@ import { tags as t, Tag } from '@lezer/highlight';
 import { IMG_EXT, markdown as toHtml } from './md.js';
 
 /* ---------------- Extra syntax: ==highlight== and [[wiki links]] ---------------- */
-const markTag = Tag.define(), wikiTag = Tag.define();
+const markTag = Tag.define(), wikiTag = Tag.define(), hashTag = Tag.define();
 const HighlightDelim = { resolve: 'Highlight', mark: 'HighlightMark' };
 const HighlightExt = {
   defineNodes: [{ name: 'Highlight', style: { 'Highlight/...': markTag } }, { name: 'HighlightMark', style: t.processingInstruction }],
@@ -37,6 +37,17 @@ const WikiExt = {
     },
   }],
 };
+const TagExt = {
+  defineNodes: [{ name: 'HashTag', style: hashTag }],
+  parseInline: [{
+    name: 'HashTag', before: 'Emphasis',
+    parse(cx, next, pos){
+      if (next != 35 || (pos > cx.offset && !/[\s(]/.test(cx.slice(pos - 1, pos)))) return -1;
+      const m = /^#[\p{L}\p{N}_\-\/]*[\p{L}_\-\/][\p{L}\p{N}_\-\/]*/u.exec(cx.slice(pos, cx.end));
+      return m ? cx.addElement(cx.elt('HashTag', pos, pos + m[0].length)) : -1;
+    },
+  }],
+};
 
 const style = HighlightStyle.define([
   { tag: t.heading, fontWeight: '650' },
@@ -49,6 +60,7 @@ const style = HighlightStyle.define([
   { tag: [t.processingInstruction, t.contentSeparator, t.atom, t.meta, t.labelName], color: 'var(--muted)' },
   { tag: t.quote, color: 'var(--muted)' },
   { tag: markTag, backgroundColor: 'var(--mark)' },
+  { tag: hashTag, class: 'cm-tag' },
 ]);
 
 /* ---------------- Live Preview widgets ---------------- */
@@ -239,6 +251,9 @@ function buildLive(view, opts, cache){
           mark(alias != null ? open + target.length + 1 : open, close, { 'data-wiki': target.trim() }, 'cm-lp-link');
           return false;
         }
+        case 'HashTag':
+          if (!shown(n.from, n.to)) mark(n.from, n.to, { 'data-tag': doc.sliceString(n.from + 1, n.to) }, 'cm-lp-tag');
+          return false;
         case 'LinkReference': {
           const url = kid(n, 'URL');
           if (url && !shown(n.from, n.to) && doc.sliceString(url.from, url.from + 5) === 'data:')
@@ -262,10 +277,11 @@ function livePreview(opts){
     decorations: v => v.decorations,
     eventHandlers: {
       mousedown(e){
-        const a = e.target.closest && e.target.closest('.cm-lp-link');
+        const a = e.target.closest && e.target.closest('.cm-lp-link, .cm-lp-tag');
         if (!a || e.button !== 0 || e.shiftKey) return false;
         e.preventDefault();
-        if (a.dataset.wiki != null) opts.openWiki(a.dataset.wiki, e.ctrlKey || e.metaKey);
+        if (a.dataset.tag != null) opts.openTag(a.dataset.tag);
+        else if (a.dataset.wiki != null) opts.openWiki(a.dataset.wiki, e.ctrlKey || e.metaKey);
         else opts.openLink(a.dataset.href);
         return true;
       },
@@ -291,7 +307,7 @@ export function createEditor(parent, opts){
       indentUnit.of('  '),
       // Markdown without the HTML/CSS/JS sub-languages (saves ~170 KB); same language data, so
       // the list-continuation keys still recognise it.
-      new LanguageSupport(new Language(markdownLanguage.data, markdownLanguage.parser.configure([HighlightExt, WikiExt]), [], 'markdown')),
+      new LanguageSupport(new Language(markdownLanguage.data, markdownLanguage.parser.configure([HighlightExt, WikiExt, TagExt]), [], 'markdown')),
       syntaxHighlighting(style),
       search({ top: true, createPanel: opts.createFindPanel }),
       keymap.of([

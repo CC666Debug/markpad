@@ -1,11 +1,11 @@
 import { EditorView } from '@codemirror/view';
 import { SearchQuery, setSearchQuery, getSearchQuery, findNext, findPrevious, replaceNext, replaceAll,
   openSearchPanel, closeSearchPanel, searchPanelOpen } from '@codemirror/search';
-import { markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } from './md.js';
+import { TAG_RE, markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } from './md.js';
 import { createEditor } from './editor.js';
 import { host } from './host.js';
 
-const VERSION = '2.1.7';
+const VERSION = '2.1.8';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -778,9 +778,77 @@ async function switchLibrary(d){ if (await flush()) openLibrary(d); }
 let qsHits = [], qsOn = 0;
 function openSwitcher(){
   if (!lib){ toggleSide(true); toast('Pick a library first'); return; }
+  qsMode = 'files'; $('#qsInput').placeholder = 'Find or create a note…';
   $('#qs').hidden = false; $('#qsInput').value = ''; qsFilter(); $('#qsInput').focus();
 }
+/* Search in notes (Ctrl+Shift+P): plain words search every note's text; "#tag" lists the notes
+   with that tag (nested ones too); empty shows all tags with their counts. */
+let qsMode = 'files', noteTexts = [];
+async function openSearch(q = ''){
+  if (!lib){ toggleSide(true); toast('Pick a library first'); return; }
+  qsMode = 'search'; $('#qsInput').placeholder = 'Search in notes, or #tag';
+  $('#qs').hidden = false; $('#qsInput').value = q; $('#qsInput').focus();
+  $('#qsList').innerHTML = '<div class="empty">Reading notes…</div>';
+  stash();
+  noteTexts = await Promise.all(allFiles().filter(f => isNote(f.name)).map(async f => {
+    const t = tabs.find(t => t.cur.kind === 'lib' && t.cur.path === f.path);
+    return { f, lines: (t ? t.state.doc.toString() : await lib.fs.read(f.path).catch(() => '')).split('\n') };
+  }));
+  if (qsMode === 'search' && !$('#qs').hidden) qsFilter();
+}
+// a note's tags with their line numbers: #tags in the text (not in code) and frontmatter "tags:"
+function tagsOf(lines){
+  const out = [];
+  let i = 0;
+  if (lines[0]?.trim() === '---'){
+    let inTags = false;
+    for (i = 1; i < lines.length && lines[i].trim() !== '---'; i++){
+      const l = lines[i], m = l.match(/^tags?:\s*(.*)$/i);
+      if (m){ inTags = !m[1].trim(); for (const t of m[1].replace(/[[\]"']/g, '').split(/[,\s]+/)) if (t.replace(/^#/, '')) out.push({ tag: t.replace(/^#/, ''), line: i }); }
+      else if (inTags && /^\s*-\s+/.test(l)) out.push({ tag: l.replace(/^\s*-\s+/, '').replace(/["']/g, '').replace(/^#/, '').trim(), line: i });
+      else inTags = false;
+    }
+    i++;
+  }
+  let fence = false;
+  for (; i < lines.length; i++){
+    if (FENCE_RE.test(lines[i])){ fence = !fence; continue; }
+    if (fence) continue;
+    for (const m of lines[i].replace(/`[^`]*`/g, '').matchAll(TAG_RE)) out.push({ tag: m[2], line: i });
+  }
+  return out;
+}
+function searchFilter(){
+  const q = $('#qsInput').value.trim().toLowerCase();
+  const name = f => esc(f.name.replace(/\.md$/i, ''));
+  qsHits = []; qsOn = 0;
+  let html = '';
+  if (!q){   // every tag in the library, most used first
+    const count = new Map();
+    for (const { lines } of noteTexts) for (const t of new Set(tagsOf(lines).map(x => x.tag.toLowerCase()))) count.set(t, (count.get(t) || 0) + 1);
+    const all = [...count].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    html = all.map(([t, n], k) => `<button data-tag="${esc(t)}"${k ? '' : ' class="on"'}>#${esc(t)}<small>${n} note${n > 1 ? 's' : ''}</small></button>`).join('')
+      || '<div class="empty">No #tags yet. Type words to search inside your notes.</div>';
+  } else if (/^#[^\s#]+$/.test(q)){
+    const want = q.slice(1);
+    for (const { f, lines } of noteTexts){
+      const hit = tagsOf(lines).find(x => { const t = x.tag.toLowerCase(); return t === want || t.startsWith(want + '/'); });
+      if (hit) qsHits.push({ f, line: hit.line, text: lines[hit.line] });
+    }
+  } else {
+    for (const { f, lines } of noteTexts)
+      lines.forEach((l, i) => { if (qsHits.length < 300 && l.toLowerCase().includes(q)) qsHits.push({ f, line: i, text: l }); });
+  }
+  if (q){
+    const hl = t => { t = t.trim().slice(0, 160); const k = t.toLowerCase().indexOf(q);
+      return k < 0 ? esc(t) : esc(t.slice(0, k)) + '<mark>' + esc(t.slice(k, k + q.length)) + '</mark>' + esc(t.slice(k + q.length)); };
+    html = qsHits.map((h, k) => `<button data-k="${k}"${k ? '' : ' class="on"'}>${name(h.f)}<small>${hl(h.text)}</small></button>`).join('')
+      || '<div class="empty">Nothing found</div>';
+  }
+  $('#qsList').innerHTML = html;
+}
 function qsFilter(){
+  if (qsMode === 'search') return searchFilter();
   const q = $('#qsInput').value.trim().toLowerCase();
   const score = f => {
     const n = f.name.toLowerCase(), p = f.path.toLowerCase();
@@ -797,9 +865,11 @@ function qsFilter(){
   if (!qsHits.length && create) $('#qsList').firstChild.classList.add('on');
 }
 function qsPick(b, forceNew){
+  if (b?.dataset.tag){ $('#qsInput').value = '#' + b.dataset.tag; qsFilter(); $('#qsInput').focus(); return; }
   $('#qs').hidden = true;
-  if (!b) return;
-  if (b.dataset.new) flush().then(() => createNote(selectedDir(), $('#qsInput').value.trim()));
+  if (!b || !b.dataset.k && !b.dataset.new) return;
+  if (qsMode === 'search'){ const h = qsHits[+b.dataset.k]; openLibFile(h.f.path, forceNew).then(() => jumpToLine(h.line)); }
+  else if (b.dataset.new) flush().then(() => createNote(selectedDir(), $('#qsInput').value.trim()));
   else openLibFile(qsHits[+b.dataset.k].path, forceNew);
 }
 $('#qsInput').addEventListener('input', qsFilter);
@@ -1077,7 +1147,8 @@ pv.addEventListener('click', e => {
   const a = e.target.closest('a[href]');
   if (!a) return;
   e.preventDefault();
-  if (a.classList.contains('wikilink')) openWiki(a.dataset.wiki + (a.dataset.hash ? '#' + a.dataset.hash : ''), e.ctrlKey || e.metaKey);
+  if (a.classList.contains('tag')) openSearch('#' + a.dataset.tag);
+  else if (a.classList.contains('wikilink')) openWiki(a.dataset.wiki + (a.dataset.hash ? '#' + a.dataset.hash : ''), e.ctrlKey || e.metaKey);
   else openLink(a.getAttribute('href'));
 });
 pv.addEventListener('scroll', () => {
@@ -1241,6 +1312,7 @@ $('#bOpen').addEventListener('click', openFile);
 $('#bSave').addEventListener('click', () => save(false));
 $('#bSaveAs').addEventListener('click', closeMenu(() => save(true)));
 $('#bSwitcher').addEventListener('click', closeMenu(openSwitcher));
+$('#bSearch').addEventListener('click', closeMenu(() => openSearch()));
 $('#bExport').addEventListener('click', closeMenu(exportHtml));
 $('#bPrint').addEventListener('click', closeMenu(() => { pv.innerHTML = markdown(text()); fillPreview(); setTimeout(() => host.print(), 300); }));
 $('#bAutosave').setAttribute('aria-pressed', String(autosave));
@@ -1298,6 +1370,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'f' || k === 'h'){ e.preventDefault(); openFind(k === 'h'); }
   else if (k === 'o' && e.shiftKey){ e.preventDefault(); if ($('#side').hidden || $('#olPane').hidden){ toggleSide(true); showTab('outline'); } else toggleSide(false); }
   else if (k === 'o'){ e.preventDefault(); openFile(); }
+  else if (k === 'p' && e.shiftKey){ e.preventDefault(); openSearch(); }
   else if (k === 'p'){ e.preventDefault(); openSwitcher(); }
   else if (k === 'n'){ e.preventDefault(); newNote(); }
   else if (k === 't'){ e.preventDefault(); newTab(); }
@@ -1346,6 +1419,7 @@ cm = createEditor(pane, {
   resolveImage,
   openLink,
   openWiki,
+  openTag: tag => openSearch('#' + tag),
   onUpdate(u){
     if (u.docChanged && !loading){ scrollSrc = 'ed'; if (!dirty) setDirty(true); else { saveSession(); if (autosave && cur.kind === 'lib'){ clearTimeout(saveTimer); saveTimer = setTimeout(() => save(false, true), 1200); } } scheduleRender(); }
     if (u.selectionSet || u.docChanged) updateCursor();

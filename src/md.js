@@ -9,6 +9,8 @@ const QUOTE_RE = /^ {0,3}> ?/;
 const SEP_RE = /^ *\|? *:?-+:? *(\| *:?-+:? *)*\|? *$/;
 const SETEXT_RE = /^ {0,3}(=+|-+) *$/;
 const DEF_RE = /^ {0,3}\[([^\]]+)\]:[ \t]*(\S+)(?:[ \t]+"(.*)")?[ \t]*$/;
+// Obsidian-style #tags: letters, digits, _ - / (nested), at least one non-digit
+const TAG_RE = /(^|[\s(])#([\p{L}\p{N}_\-\/]*[\p{L}_\-\/][\p{L}\p{N}_\-\/]*)/gu;
 let refs = {};
 
 const isTableStart = (lines,i) => lines[i].includes('|') && i+1 < lines.length && SEP_RE.test(lines[i+1]) && lines[i+1].includes('|');
@@ -62,6 +64,7 @@ function inline(s){
   });
   s = s.replace(/&lt;((?:https?|mailto):[^\s]+?)&gt;/g, (m,u) => put(`<a href="${u}">${u}</a>`));
   s = s.replace(/(^|[\s(])(https?:\/\/[^\s<]*[^\s<.,;:!?)\]'"])/g, (m,p,u) => p + put(`<a href="${u}">${u}</a>`));
+  s = s.replace(TAG_RE, (m,p,t) => p + put(`<a href="#" class="tag" data-tag="${t}">#${t}</a>`));
   s = s.replace(/&lt;u&gt;([\s\S]*?)&lt;\/u&gt;/g, '<u>$1</u>');   // underline, written as <u>…</u> like in Obsidian
   s = s.replace(/\*\*\*(?=\S)([\s\S]*?\S)\*\*\*/g, '<strong><em>$1</em></strong>');
   s = s.replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '<strong>$1</strong>');
@@ -179,4 +182,4 @@ function markdown(src){
   return blocks(lines, false, true);
 }
 
-export { markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, LIST_RE, IMG_EXT };
+export { TAG_RE, markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, LIST_RE, IMG_EXT };
