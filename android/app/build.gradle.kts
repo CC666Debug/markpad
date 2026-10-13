@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.cc666debug.markpad"
         minSdk = 24
         targetSdk = 35
-        versionCode = 6
-        versionName = "2.1.4"
+        versionCode = 7
+        versionName = "2.1.5"
     }
 
     compileOptions {

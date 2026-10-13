@@ -1,6 +1,7 @@
 package io.github.cc666debug.markpad
 
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.print.PrintAttributes
@@ -13,12 +14,14 @@ import android.webkit.MimeTypeMap
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
+import android.widget.FrameLayout
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewClientCompat
@@ -32,6 +35,7 @@ import java.util.concurrent.Executors
 // bridge (window.MarkpadAndroid) that reaches files through Android's own pickers.
 class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
+    private lateinit var frame: FrameLayout
     private val io = Executors.newSingleThreadExecutor()
     private var pickerDone: ((Intent?) -> Unit)? = null
     private val picker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -46,10 +50,12 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         web = WebView(this)
-        setContentView(web)
-        // keep the page clear of the status bar, navigation bar and keyboard
-        ViewCompat.setOnApplyWindowInsetsListener(web) { v, insets ->
-            val b = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
+        // a WebView ignores its own padding, so the page sits in a padded frame instead
+        frame = FrameLayout(this).apply { addView(web) }
+        setContentView(frame)
+        // keep the page clear of the status bar, navigation bar, camera cutout and keyboard
+        ViewCompat.setOnApplyWindowInsetsListener(frame) { v, insets ->
+            val b = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime())
             v.setPadding(b.left, b.top, b.right, b.bottom)
             WindowInsetsCompat.CONSUMED
         }
@@ -137,6 +143,7 @@ class MainActivity : AppCompatActivity() {
                         "mtime" -> lib(a).mtime(a.getString("path")).toString()
                         "print" -> { runOnUiThread { print() }; null }
                         "openExternal" -> { openExternal(a.getString("url")); null }
+                        "bars" -> { runOnUiThread { bars(a.getBoolean("dark")) }; null }
                         else -> throw IllegalArgumentException("unknown call $method")
                     }
                 }
@@ -181,6 +188,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun writeUri(u: Uri, text: String) {
         contentResolver.openOutputStream(u, "wt")!!.use { it.write(text.toByteArray()) }
+    }
+
+    // paint the strips behind the status and navigation bars like the page's own bars
+    private fun bars(dark: Boolean) {
+        frame.setBackgroundColor(Color.parseColor(if (dark) "#232428" else "#F3F2EF"))
+        WindowInsetsControllerCompat(window, frame).apply {
+            isAppearanceLightStatusBars = !dark
+            isAppearanceLightNavigationBars = !dark
+        }
     }
 
     private fun print() {

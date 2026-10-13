@@ -5,7 +5,7 @@ import { markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } fro
 import { createEditor } from './editor.js';
 import { host } from './host.js';
 
-const VERSION = '2.1.4';
+const VERSION = '2.1.5';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -1121,7 +1121,11 @@ function setView(v){
   if (v !== 'preview') view.focus();
 }
 document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
-function applyTheme(t){ if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; }
+function applyTheme(t){
+  if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
+  host.bars?.(getComputedStyle(document.documentElement).colorScheme.includes('dark'));
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(store.get('theme')));
 $('#bTheme').addEventListener('click', () => {
   const t = getComputedStyle(document.documentElement).colorScheme.includes('dark') ? 'light' : 'dark';
   applyTheme(t); store.set('theme', t);

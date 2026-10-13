@@ -248,6 +248,7 @@ function androidHost(){
     setTitle: t => { document.title = t; },
     onClose(){},
     openExternal: url => call('openExternal', { url }),
+    bars: dark => call('bars', { dark }),
     onOpenFile(fn){ window.__mpOpenFile = r => fn({ name: r.name, ref: r.uri, text: r.text }); },
   };
 }
