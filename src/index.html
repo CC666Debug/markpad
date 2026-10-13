@@ -88,8 +88,10 @@ details.menu summary:hover{background:var(--hover)}
 main{flex:1;display:flex;min-height:0;position:relative}
 
 /* sidebar: Files + Outline */
-#side{flex:0 0 250px;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--panel);min-width:0;font-size:13px}
+#side{flex:0 0 250px;display:flex;flex-direction:column;border-right:1px solid var(--border);background:var(--panel);min-width:0;font-size:13px;position:relative}
 #side[hidden]{display:none}
+#sideGrip{position:absolute;top:0;bottom:0;right:-4px;width:8px;cursor:col-resize;z-index:5;touch-action:none}
+#sideGrip:hover,#sideGrip.drag{background:color-mix(in srgb,var(--accent) 25%,transparent)}
 .tabs{display:flex;gap:2px;padding:6px 6px 0;flex:none}
 .tabs button{flex:1;height:28px;font-size:12px;color:var(--muted);border-radius:6px 6px 0 0;font-weight:600;letter-spacing:.03em;text-transform:uppercase}
 .tabs button[aria-selected="true"]{color:var(--text);background:var(--bg)}
@@ -202,6 +204,7 @@ body.focus .cm-scroller{font-size:17px!important}
   .cm-content{padding-top:16px!important}
   #preview{padding:16px 16px 60px}
   #side{position:absolute;top:0;bottom:0;left:0;width:min(300px,86vw);z-index:15;box-shadow:0 8px 24px rgba(0,0,0,.2)}
+  #sideGrip{display:none}
   #findBar input{width:140px}
   .lbl,.brand span,.hide-sm{display:none}
 }
@@ -332,6 +335,7 @@ body.focus .cm-scroller{font-size:17px!important}
       <div class="libempty" id="libEmpty"></div>
     </div>
     <div class="pane" id="olPane" hidden><div id="olList"></div></div>
+    <div id="sideGrip" title="Drag to resize (double-click to reset)"></div>
   </aside>
   <div id="editPane"></div>
   <div id="divider" role="separator" aria-orientation="vertical" title="Drag to resize"></div>

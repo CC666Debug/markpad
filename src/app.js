@@ -5,7 +5,7 @@ import { markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } fro
 import { createEditor } from './editor.js';
 import { host } from './host.js';
 
-const VERSION = '2.1.3';
+const VERSION = '2.1.4';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -797,6 +797,22 @@ $('#olList').addEventListener('click', e => {
   jumpToLine(heads[+b.dataset.k].line);
   if (window.innerWidth <= 700) toggleSide(false);
 });
+// drag the sidebar's right edge to resize it
+const side = $('#side'), grip = $('#sideGrip');
+const setSideW = w => { side.style.flexBasis = Math.min(Math.max(w, 160), Math.min(700, innerWidth - 300)) + 'px'; };
+if (store.get('sidew')) setSideW(+store.get('sidew'));
+grip.addEventListener('pointerdown', e => {
+  if (window.innerWidth <= 700) return;
+  e.preventDefault(); grip.setPointerCapture(e.pointerId); grip.classList.add('drag');
+  const left = side.getBoundingClientRect().left;
+  const move = ev => setSideW(ev.clientX - left);
+  grip.addEventListener('pointermove', move);
+  grip.addEventListener('pointerup', () => {
+    grip.classList.remove('drag'); grip.removeEventListener('pointermove', move);
+    store.set('sidew', parseInt(side.style.flexBasis));
+  }, { once: true });
+});
+grip.addEventListener('dblclick', () => { side.style.flexBasis = ''; store.set('sidew', ''); });
 function toggleSide(on = $('#side').hidden){
   $('#side').hidden = !on; $('#bSide').setAttribute('aria-pressed', String(on));
   if (window.innerWidth > 700) store.set('side', on ? '1' : '');
