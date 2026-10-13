@@ -6,7 +6,7 @@ import { createEditor } from './editor.js';
 import { makeZip, readZip } from './zip.js';
 import { host } from './host.js';
 
-const VERSION = '2.2.1';
+const VERSION = '2.3.0';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';

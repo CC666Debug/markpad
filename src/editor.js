@@ -316,7 +316,10 @@ export function createEditor(parent, opts){
         ...markdownKeymap, ...historyKeymap, ...defaultKeymap,
       ]),
       live.of([]),
-      EditorView.contentAttributes.of({ spellcheck: 'false', autocapitalize: 'off', 'aria-label': 'Markdown editor' }),
+      // phone keyboards (Gboard) only auto-capitalise, auto-correct and do double-space-period when the field asks for it
+      EditorView.contentAttributes.of(window.MarkpadAndroid
+        ? { spellcheck: 'true', autocapitalize: 'sentences', autocorrect: 'on', 'aria-label': 'Markdown editor' }
+        : { spellcheck: 'false', autocapitalize: 'off', 'aria-label': 'Markdown editor' }),
       EditorView.updateListener.of(u => opts.onUpdate(u)),
       EditorView.domEventHandlers({ paste: (e, v) => opts.onPaste(e, v), drop: (e, v) => opts.onDrop(e, v) }),
   ];
