@@ -1,0 +1,117 @@
+# Every push builds all editions and puts them on the Releases page as "latest":
+#   Markpad.html (browser), Windows installer + portable zip, Linux .deb + AppImage (Linux Mint), Android APK.
+# Free on public repos; switch it off any time under the repo's Actions tab.
+name: Build apps
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:        # plus a "Run workflow" button
+permissions:
+  contents: write
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci && node build.mjs && cp dist/index.html Markpad.html
+      - uses: actions/upload-artifact@v4
+        with: { name: web, path: Markpad.html }
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]   # 22.04 so the Linux build runs on Mint 21 and newer
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libfuse2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: desktop }
+      - run: npm ci && node build.mjs
+      - name: Build
+        working-directory: desktop
+        run: npx tauri build
+      - name: Collect (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory out, "Markpad Portable\Notes" | Out-Null
+          Copy-Item desktop\target\release\bundle\nsis\*-setup.exe out\Markpad-Setup.exe
+          # the "portable" file tells Markpad to keep notes and settings in its own folder
+          Copy-Item desktop\target\release\markpad.exe "Markpad Portable\Markpad.exe"
+          Set-Content "Markpad Portable\portable" "Markpad keeps its notes (Notes) and settings (Data) in this folder."
+          Compress-Archive "Markpad Portable" out\Markpad-Portable-Windows.zip
+      - name: Collect (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir out
+          cp desktop/target/release/bundle/deb/*.deb out/Markpad.deb
+          cp desktop/target/release/bundle/appimage/*.AppImage out/Markpad.AppImage
+      - uses: actions/upload-artifact@v4
+        with: { name: desktop-${{ runner.os }}, path: out/* }
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci && node build.mjs
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/debug.keystore"
+          test -s "$RUNNER_TEMP/debug.keystore"
+      - name: Build
+        # signed with the PC's own debug key (standard Android debug passwords), so it updates the installed app
+        working-directory: android
+        run: >
+          bash ./gradlew assembleDebug --no-daemon
+          -Pandroid.injected.signing.store.file="$RUNNER_TEMP/debug.keystore"
+          -Pandroid.injected.signing.store.password=android
+          -Pandroid.injected.signing.key.alias=androiddebugkey
+          -Pandroid.injected.signing.key.password=android
+      - name: Check it's signed with the same key as the PC builds
+        run: |
+          SIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner
+          GOT=$("$SIGNER" verify --print-certs android/app/build/outputs/apk/debug/app-debug.apk | grep -m1 'SHA-256' | awk '{print $NF}')
+          echo "signed with $GOT"
+          test "$GOT" = "f90b07c9b32a21f52b30d87a1a41f560dcad9aa0a2e3346e778d0566c411d1d9"
+          mkdir out && cp android/app/build/outputs/apk/debug/app-debug.apk out/Markpad.apk
+      - uses: actions/upload-artifact@v4
+        with: { name: android, path: out/Markpad.apk }
+
+  release:
+    needs: [web, desktop, android]
+    if: ${{ !cancelled() }}   # still publish whatever built if one edition failed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: art, merge-multiple: true }
+      - name: Put it on the Releases page
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          ls -la art
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest art/* --title "Markpad $VER" --notes "Built from $(git rev-parse --short HEAD).
+
+          - **Windows**: Markpad-Setup.exe (installs for you only, no admin), or Markpad-Portable-Windows.zip (unzip anywhere, e.g. a USB stick; notes and settings stay in that folder)
+          - **Linux Mint**: Markpad.deb (double-click to install), or Markpad.AppImage (make it executable and run; put an empty file called \`portable\` next to it to keep notes beside it)
+          - **Android**: Markpad.apk (install over the old one)
+          - **Browser**: Markpad.html (one file, open it in Chrome or Edge)"

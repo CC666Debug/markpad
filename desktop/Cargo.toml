@@ -1,0 +1,23 @@
+[package]
+name = "markpad"
+version = "2.0.0"
+description = "Markpad: a slim Markdown editor"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
+open = "5"
+
+# small and fast: the whole app should stay a few MB
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

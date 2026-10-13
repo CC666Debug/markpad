@@ -185,6 +185,20 @@ function desktopHost(){
       w.onCloseRequested(async e => { if (!(await fn())) e.preventDefault(); });
     },
     openExternal: url => invoke('open_external', { url }),
+    // the desktop window gets dropped files as paths, not as browser File objects
+    onDropPaths(fn){
+      T.webview.getCurrentWebview().onDragDropEvent(e => {
+        const t = e.payload.type;
+        document.body.classList.toggle('dragging', t === 'enter' || t === 'over');
+        if (t === 'drop') fn(e.payload.paths);
+      });
+    },
+    async readFileAsFile(p){
+      const raw = atob(await invoke('read_b64', { path: p })), bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      const ext = p.split('.').pop().toLowerCase();
+      return new File([bytes], name(p), { type: 'image/' + (ext === 'jpg' ? 'jpeg' : ext === 'svg' ? 'svg+xml' : ext) });
+    },
   };
 }
 

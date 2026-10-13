@@ -1,7 +1,7 @@
 import { EditorView } from '@codemirror/view';
 import { SearchQuery, setSearchQuery, getSearchQuery, findNext, findPrevious, replaceNext, replaceAll,
   openSearchPanel, closeSearchPanel, searchPanelOpen } from '@codemirror/search';
-import { markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE } from './md.js';
+import { markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } from './md.js';
 import { createEditor } from './editor.js';
 import { host } from './host.js';
 
@@ -1015,6 +1015,16 @@ for (const [el, name] of [[view.dom, 'ed'], [pv, 'pv']])
 
 applyTheme(store.get('theme'));
 const split = store.get('split'); if (split) pane.style.flexBasis = split;
+if (host.onDropPaths) host.onDropPaths(async paths => {
+  const imgs = paths.filter(p => IMG_EXT.test(p));
+  if (imgs.length && imgs.length === paths.length){ insertImages(await Promise.all(imgs.map(p => host.readFileAsFile(p)))); return; }
+  const p = paths.find(x => !IMG_EXT.test(x));
+  if (!p || !(await okToDiscard())) return;
+  try {
+    const name = p.split(/[\\/]/).pop();
+    loadText(await host.readRef(p), { kind: 'loose', name, ref: p }); addRecent({ name, ref: p });
+  } catch (e){ toast('Could not open: ' + (e.message || e)); }
+});
 if (host.onOpenFile) host.onOpenFile(async f => { if (await okToDiscard()){ loadText(f.text, { kind: 'loose', name: f.name, ref: f.ref }); addRecent({ name: f.name, ref: f.ref }); } });
 
 (async () => {
@@ -1046,6 +1056,18 @@ if (host.onOpenFile) host.onOpenFile(async f => { if (await okToDiscard()){ load
   updateCursor();
   view.focus();
 })();
+
+// Android's back button: close whatever is open first (returns true if it closed something)
+window.__mpBack = () => {
+  if (!$('#ask').hidden){ $('#ask').hidden = true; return true; }
+  if (!$('#qs').hidden){ $('#qs').hidden = true; return true; }
+  if (!ctx.hidden){ ctx.hidden = true; return true; }
+  if (menu.open){ menu.open = false; return true; }
+  if (document.body.classList.contains('focus')){ setFocus(false); return true; }
+  if (searchPanelOpen(view.state)){ closeFind(); return true; }
+  if (!$('#side').hidden && window.innerWidth <= 700){ toggleSide(false); return true; }
+  return false;
+};
 
 // for the automated tests
 window.__markpad = { get view(){ return view; }, get cur(){ return cur; }, get lib(){ return lib; }, openLibrary, openLibFile, setView, insertImages, toggleSide, showTab };

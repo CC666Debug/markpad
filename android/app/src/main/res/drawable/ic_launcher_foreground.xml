@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The white M↓ from the Markpad logo, centred in the adaptive icon's safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+  <group android:scaleX="2.6" android:scaleY="2.6" android:translateX="8.5" android:translateY="12.4">
+    <path android:fillColor="#FFFFFF" android:pathData="M7 22V10h3l3 4 3-4h3v12h-3v-7l-3 4-3-4v7zM22 17h2v-7h2v7h2l-3 4z"/>
+  </group>
+</vector>
