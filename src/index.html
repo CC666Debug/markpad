@@ -55,7 +55,7 @@ details.menu summary:hover{background:var(--hover)}
 .menu-list .sub{font-size:11.5px;color:var(--muted);padding:6px 8px 2px;border-top:1px solid var(--border);margin-top:4px}
 .menu-list .recent{max-width:280px;overflow:hidden;text-overflow:ellipsis;display:block;text-align:left;line-height:30px}
 .menu-list .key{margin-left:auto;color:var(--muted);font-size:12px;padding-left:12px}
-.ctx[hidden]{display:none}
+.ctx[hidden],button[hidden]{display:none}
 
 /* find bar (lives inside the editor as a CodeMirror panel) */
 #findBar{display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:5px 10px;border-bottom:1px solid var(--border);background:var(--panel)}
@@ -122,6 +122,30 @@ main{flex:1;display:flex;min-height:0;position:relative}
 #tagList .tn.on{color:var(--accent)}
 #olList button.on{color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,transparent)}
 .empty{color:var(--muted);padding:4px 8px;font-size:12.5px}
+/* frontmatter (properties) */
+.cm-live .cm-lp-fm{font:12.5px/1.6 ui-monospace,"Cascadia Code",Consolas,monospace;color:var(--muted)}
+.md .props{font-size:12.5px;color:var(--muted);border:1px solid var(--border);border-radius:8px;padding:6px 10px;margin:0 0 16px;display:flex;flex-direction:column;gap:2px;overflow-wrap:anywhere}
+.md .props span{display:inline-block;min-width:9em;margin-right:8px;color:var(--muted);opacity:.8}
+.md .props a{color:var(--accent)}
+/* JotBird */
+#jbChip{height:24px;font-size:12px;padding:0 9px;border-radius:12px;border:1px solid var(--border);color:#2f8a4c;margin-left:4px}
+#jbChip.soon{color:#b5651d}
+#jbChip.gone{color:var(--muted)}
+#jbChip .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.publist{padding:4px}
+.publist button.pg{display:flex;width:100%;height:auto;min-height:30px;justify-content:space-between;align-items:center;gap:8px;text-align:left;padding:4px 8px;border-radius:5px;white-space:normal;line-height:1.3}
+.publist button.pg.on{color:var(--accent)}
+.publist small{color:#2f8a4c;white-space:nowrap;font-size:11.5px}
+.publist .soon small{color:#b5651d}
+.publist .gone small{color:var(--muted)}
+.publist .head{font-size:11.5px;color:var(--muted);padding:8px 8px 2px}
+#jbDlg .box{max-width:420px}
+#jbDlg h3{margin:0 0 8px;font-size:16px}
+#jbBody .set{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0;border-top:1px solid var(--border);font-size:13px}
+#jbBody .set:first-child{border-top:0}
+#jbBody .set small{display:block;color:var(--muted);font-size:12px}
+#jbBody .set button{flex:none;border-color:var(--border)}
+#jbBody .publist{max-height:55vh;overflow:auto;margin:0 -8px}
 
 #editPane{flex:0 0 50%;min-width:0;display:flex;flex-direction:column;position:relative;background:var(--bg)}
 #editPane .cm-editor{flex:1;min-height:0;outline:0!important}
@@ -270,6 +294,7 @@ body.focus .cm-scroller{font-size:17px!important}
       <button id="bSearch">Search in notes / #tags…<span class="key">Ctrl+Shift+P</span></button>
       <button id="bExport">Export as HTML</button>
       <button id="bPrint">Print / Save as PDF</button>
+      <button id="bJb" hidden title="Share this note as a web page (JotBird)">Publish…</button>
       <button id="bBackup" title="All notes and pictures of the open library in one zip, optionally with a password">Back up notes…</button>
       <button id="bRestore" title="Unpacks a backup zip into a new “Restored” folder; nothing is overwritten">Restore from backup…</button>
       <button id="bAutosave" class="tog" aria-pressed="true">Auto-save library notes</button>
@@ -282,11 +307,13 @@ body.focus .cm-scroller{font-size:17px!important}
       <button id="bNewTabs" class="tog" aria-pressed="false" title="Off: a note replaces the current tab (Ctrl+click or middle-click for a new tab)">Open notes in a new tab</button>
       <button id="bShowOutline" class="tog" aria-pressed="true">Show Outline tab</button>
       <button id="bShowTags" class="tog" aria-pressed="true">Show Tags tab</button>
+      <button id="bShowPub" class="tog" aria-pressed="true" hidden>Show Published tab</button>
       <button id="bReadable" class="tog" aria-pressed="false" title="On: text stays in a comfortable column. Off: text fills the window.">Readable line length</button>
       <div id="recentBox"></div>
       <div class="sub" id="aboutLine"></div>
     </div>
   </details>
+  <button id="jbChip" hidden title="This note is a web page (JotBird)"><span class="dot"></span><span id="jbChipText"></span></button>
   <div class="sep"></div>
   <div class="fmt">
     <button data-f="bold" title="Bold (Ctrl+B)"><b>B</b></button>
@@ -342,6 +369,7 @@ body.focus .cm-scroller{font-size:17px!important}
       <button role="tab" data-tab="files" aria-selected="true">Files</button>
       <button role="tab" data-tab="outline" aria-selected="false">Outline</button>
       <button role="tab" data-tab="tags" aria-selected="false">Tags</button>
+      <button role="tab" data-tab="published" aria-selected="false" hidden>Published</button>
     </div>
     <div class="pane" id="filesPane">
       <div class="libhead" id="libHead" hidden>
@@ -357,6 +385,7 @@ body.focus .cm-scroller{font-size:17px!important}
     </div>
     <div class="pane" id="olPane" hidden><div id="olList"></div></div>
     <div class="pane" id="tagPane" hidden><div id="tagList"></div></div>
+    <div class="pane" id="pubPane" hidden><div id="pubList" class="publist"></div></div>
     <div id="sideGrip" title="Drag to resize (double-click to reset)"></div>
   </aside>
   <div id="editPane"></div>
@@ -375,6 +404,11 @@ body.focus .cm-scroller{font-size:17px!important}
   <p id="askMsg"></p>
   <input id="askInput" spellcheck="false">
   <div class="btns" id="askBtns"></div>
+</div></div>
+<div class="modal" id="jbDlg" hidden><div class="box">
+  <h3 id="jbTitle"></h3>
+  <div id="jbBody"></div>
+  <div class="btns"><button class="primary" id="jbClose">Close</button></div>
 </div></div>
 <div class="modal" id="qs" hidden><div class="box">
   <input id="qsInput" placeholder="Find or create a note…" spellcheck="false">

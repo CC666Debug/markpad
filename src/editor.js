@@ -49,6 +49,23 @@ const TagExt = {
   }],
 };
 
+// frontmatter at the very top (--- … ---): Obsidian's "properties", shown small and grey instead of as headings
+const FrontExt = {
+  defineNodes: [{ name: 'Frontmatter', block: true, style: t.meta }],
+  parseBlock: [{
+    name: 'Frontmatter', before: 'HorizontalRule',
+    parse(cx, line){
+      if (cx.lineStart !== 0 || line.text !== '---') return false;
+      let end = -1;
+      while (cx.nextLine()){
+        if (line.text === '---'){ end = cx.lineStart + 3; cx.nextLine(); break; }
+      }
+      cx.addElement(cx.elt('Frontmatter', 0, end < 0 ? cx.lineStart : end));
+      return true;
+    },
+  }],
+};
+
 const style = HighlightStyle.define([
   { tag: t.heading, fontWeight: '650' },
   { tag: t.strong, fontWeight: '700' },
@@ -194,6 +211,9 @@ function buildLive(view, opts, cache){
         case 'QuoteMark':
           if (!shown(n.from, n.to)) hide(n.from, spaceAfter(n.to));
           return;
+        case 'Frontmatter':
+          lineCls(n.from, n.to, 'cm-lp-fm');
+          return false;
         case 'HorizontalRule':
           if (!shown(n.from, n.to)) widget(n.from, n.to, new TextWidget('', 'cm-lp-hr'));
           return;
@@ -307,7 +327,7 @@ export function createEditor(parent, opts){
       indentUnit.of('  '),
       // Markdown without the HTML/CSS/JS sub-languages (saves ~170 KB); same language data, so
       // the list-continuation keys still recognise it.
-      new LanguageSupport(new Language(markdownLanguage.data, markdownLanguage.parser.configure([HighlightExt, WikiExt, TagExt]), [], 'markdown')),
+      new LanguageSupport(new Language(markdownLanguage.data, markdownLanguage.parser.configure([FrontExt, HighlightExt, WikiExt, TagExt]), [], 'markdown')),
       syntaxHighlighting(style),
       search({ top: true, createPanel: opts.createFindPanel }),
       keymap.of([

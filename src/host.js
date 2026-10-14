@@ -10,6 +10,9 @@
 //   readBin(p) → Uint8Array
 //
 // Backups: shareFile(name, bytes) hands a file to the share menu / a Save dialog; openZip() → { name, bytes }
+//
+// JotBird: http({ url, method, headers, body | bodyB64 }) → { status, body, retryAfter }. Only the apps have it:
+// JotBird blocks requests from web pages, so the browser edition has no publishing.
 
 const MD_TYPES = [{ description: 'Markdown', accept: { 'text/markdown': ['.md', '.markdown', '.mdown', '.mkd', '.txt'] } }];
 const SHOWN = /\.(md|markdown|mdown|mkd|txt|png|jpe?g|gif|webp|svg|bmp|avif)$/i;
@@ -208,6 +211,7 @@ function desktopHost(){
       w.onCloseRequested(async e => { if (!(await fn())) e.preventDefault(); });
     },
     openExternal: url => invoke('open_external', { url }),
+    http: async req => { const r = await invoke('http', { headers: {}, ...req }); return { status: r.status, body: r.body, retryAfter: r.retry_after }; },
     // the desktop window gets dropped files as paths, not as browser File objects
     onDropPaths(fn){
       T.webview.getCurrentWebview().onDragDropEvent(e => {
@@ -280,6 +284,7 @@ function androidHost(){
     setTitle: t => { document.title = t; },
     onClose(){},
     openExternal: url => call('openExternal', { url }),
+    http: req => call('http', req),
     bars: dark => call('bars', { dark }),
     shareFile: async (name, bytes) => { await call('share', { name, data: b64(bytes) }); return true; },
     async openZip(){ const r = await call('openZip'); return r && { name: r.name, bytes: unb64(r.data) }; },

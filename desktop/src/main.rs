@@ -195,12 +195,56 @@ fn open_external(url: String) -> Result<(), String> {
     open::that_detached(url).map_err(err)
 }
 
+// JotBird publishing (api.jotbird.com only). The site blocks requests from web pages, so the window asks
+// Markpad to send them. Body comes as text or base64 (pictures); 4xx/5xx answers come back as a status, not an error.
+#[derive(Serialize)]
+struct HttpReply {
+    status: u16,
+    body: String,
+    retry_after: String,
+}
+
+#[tauri::command]
+async fn http(
+    url: String,
+    method: String,
+    headers: std::collections::HashMap<String, String>,
+    body: Option<String>,
+    body_b64: Option<String>,
+) -> Result<HttpReply, String> {
+    if !url.starts_with("https://api.jotbird.com/") {
+        return Err("only JotBird can be reached".into());
+    }
+    let bytes = match (body, body_b64) {
+        (_, Some(b)) => base64::engine::general_purpose::STANDARD.decode(b).map_err(err)?,
+        (Some(t), None) => t.into_bytes(),
+        (None, None) => Vec::new(),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut req = ureq::request(&method, &url).timeout(std::time::Duration::from_secs(60));
+        for (k, v) in &headers {
+            req = req.set(k, v);
+        }
+        let resp = match req.send_bytes(&bytes) {
+            Ok(r) => r,
+            Err(ureq::Error::Status(_, r)) => r,
+            Err(e) => return Err(e.to_string()),
+        };
+        let status = resp.status();
+        let retry_after = resp.header("retry-after").unwrap_or("").to_string();
+        let body = resp.into_string().map_err(err)?;
+        Ok(HttpReply { status, body, retry_after })
+    })
+    .await
+    .map_err(err)?
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             list_tree, read_text, read_b64, write_text, write_b64, make_dir, rename_path, trash_path, mtime,
-            portable_dir, startup_file, open_external
+            portable_dir, startup_file, open_external, http
         ])
         .setup(|app| {
             let mut w = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))

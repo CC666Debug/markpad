@@ -5,8 +5,9 @@ import { TAG_RE, markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_E
 import { createEditor } from './editor.js';
 import { makeZip, readZip } from './zip.js';
 import { host } from './host.js';
+import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE } from './jotbird.js';
 
-const VERSION = '2.3.1';
+const VERSION = '2.4.0';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -101,6 +102,7 @@ function updateTitle(){
   $('#dirtyDot').textContent = dirty ? '●' : '';
   host.setTitle((dirty ? '• ' : '') + cur.name + ' — Markpad');
   renderTabs();
+  if (view) jbChip();
 }
 function setDirty(d){
   dirty = d; updateTitle(); saveSession();
@@ -1051,8 +1053,10 @@ function toggleSide(on = $('#side').hidden){
 function showTab(tab){
   for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
   $('#filesPane').hidden = tab !== 'files'; $('#olPane').hidden = tab !== 'outline'; $('#tagPane').hidden = tab !== 'tags';
+  $('#pubPane').hidden = tab !== 'published';
   store.set('tab', tab); buildOutline();
   if (tab === 'tags') buildTags(true);
+  if (tab === 'published'){ jb.pages = null; $('#pubList').innerHTML = '<div class="empty">Reading notes…</div>'; jbRefreshList(true); }
 }
 /* Tags tab: every #tag in the library, most used first; click one to see its notes */
 let openTagName = null;
@@ -1494,6 +1498,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape'){
     if (!ctx.hidden){ ctx.hidden = true; return; }
     if (menu.open){ menu.open = false; return; }
+    if (!$('#jbDlg').hidden){ $('#jbDlg').hidden = true; return; }
     if (document.body.classList.contains('focus')){ setFocus(false); return; }
     if (searchPanelOpen(view.state)){ closeFind(); return; }
     if (window.innerWidth <= 700 && !$('#side').hidden){ toggleSide(false); return; }
@@ -1544,6 +1549,242 @@ window.addEventListener('pagehide', () => saveSession(true));
 // Closing never loses anything: unsaved tabs come back next time (like Notepad++).
 host.onClose(async () => { await flush(); saveSession(true); await new Promise(r => setTimeout(r, 150)); return true; });
 
+/* ---------------- JotBird: publish a note as a web page ---------------- */
+// Only the apps can publish (JotBird blocks web pages). Until it's set up, the ▾ menu shows just "Publish…";
+// after that a JotBird ▸ menu, the "Published" chip on published notes, and the Published tab.
+// The link lives in the note itself (jotbird_link / jotbird_expires, same as JotBird's Obsidian plugin).
+// The account key and the edit tokens of no-account pages stay on this device.
+const jb = {
+  can: !!host.http,
+  on: store.get('jb.on') === '1',
+  key: store.get('jb.key') || '',
+  fp: store.get('jb.fp') || (() => { const f = crypto.randomUUID(); store.set('jb.fp', f); return f; })(),
+  busy: false, pages: null,   // pages: the account's own list, fetched when the Published tab opens
+};
+const jbDocs = () => { try { return JSON.parse(store.get('jb.docs') || '{}'); } catch (_) { return {}; } };
+const jbSaveDoc = (slug, info) => { const d = jbDocs(); if (info) d[slug] = { ...d[slug], ...info }; else delete d[slug]; store.set('jb.docs', JSON.stringify(d)); };
+const jbOpt = (k, def) => (store.get('jb.' + k) ?? (def ? '1' : '')) === '1';
+const jbHere = () => jb.on ? pageOf(text()) : null;
+const dayClass = d => d != null && d < 0 ? 'gone' : d != null && d <= 7 ? 'soon' : '';
+
+function jbRefresh(){
+  const b = $('#bJb');
+  b.hidden = !jb.can;
+  b.textContent = jb.on ? 'JotBird ▸' : 'Publish…';
+  $('#bShowPub').hidden = !jb.on;
+  const tabOn = jb.on && !store.get('hide.published');
+  document.querySelector('.tabs [data-tab="published"]').hidden = !tabOn;
+  $('#bShowPub').setAttribute('aria-pressed', String(tabOn));
+  if (!tabOn && store.get('tab') === 'published') showTab('files');
+  jbChip();
+}
+function jbChip(){
+  const p = jbHere(), c = $('#jbChip');
+  c.hidden = !p; if (!p) return;
+  const d = daysLeft(p.expires);
+  $('#jbChipText').textContent = d != null && d < 0 ? 'Expired' : 'Published' + (d != null ? ` · ${d}d` : '');
+  c.className = dayClass(d);
+  c.title = `${p.link} · ${leftText(d)}`;
+}
+
+// the JotBird options for the open note (▾ JotBird ▸, and the chip)
+function jbItems(){
+  const p = jbHere();
+  return [
+    ...(p ? [
+      [daysLeft(p.expires) < 0 ? 'Publish again' : 'Update page', () => jbPublish()],
+      ['Copy link', () => jbCopy(p.link)],
+      ['Open page', () => host.openExternal(p.link)],
+      ['Unpublish…', () => jbUnpublish()],
+    ] : [['Publish this note', () => jbPublish()]]),
+    ['Published notes…', () => jbList()],
+    ['JotBird settings…', () => jbSettings()],
+  ];
+}
+$('#bJb').addEventListener('click', e => {
+  if (!jb.on){ menu.open = false; jbSetup(); return; }
+  const r = e.currentTarget.getBoundingClientRect();
+  e.stopPropagation(); menu.open = false;
+  showCtx(window.innerWidth > 700 ? r.right - 6 : r.left + 16, window.innerWidth > 700 ? r.top : r.bottom, jbItems());
+});
+$('#jbChip').addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); e.stopPropagation(); showCtx(r.left, r.bottom + 4, jbItems()); });
+
+async function jbCopy(link){
+  try { await navigator.clipboard.writeText(link); toast('Link copied'); }
+  catch (_) { await ask('Copy this link:', { input: link, buttons: [{ label: 'Close', value: null, primary: true }] }); }
+}
+
+// first time: with or without an account
+async function jbSetup(){
+  const how = await ask('Publish with JotBird\n\nJotBird turns a note into a web page with a link you can share. Publishing the note again updates the same page.\n\nWithout an account, links last 30 days. With a free account they last 90 days, and the Published list also shows pages you made elsewhere (like Obsidian).', {
+    buttons: [{ label: 'Cancel', value: null }, { label: 'Without an account', value: 'anon' }, { label: 'Log in / free account', value: 'login', primary: true }],
+  });
+  if (!how) return;
+  if (how === 'login' && !(await jbLogin())) return;
+  jb.on = true; store.set('jb.on', '1'); jbRefresh();
+  await jbPublish();
+}
+async function jbLogin(){
+  host.openExternal(KEY_PAGE);
+  const key = await ask('Markpad opened jotbird.com in your browser. Log in (or make a free account), copy your API key, and paste it here.', { input: '', buttons: [{ label: 'Cancel', value: null }, { label: 'Log in', value: true, primary: true }] });
+  if (!key) return false;
+  try { await listPages(key.trim()); }
+  catch (e){ toast("That key didn't work: " + e.message); return false; }
+  jb.key = key.trim(); store.set('jb.key', jb.key); jb.pages = null;
+  // pages made without an account on this device move into the account
+  const docs = jbDocs();
+  for (const [slug, d] of Object.entries(docs)) if (d.editToken){
+    try { await claim(jb.key, slug, d.editToken); jbSaveDoc(slug, { editToken: undefined }); } catch (_) {}
+  }
+  toast('Logged in to JotBird');
+  return true;
+}
+
+// rewrite the top of the open note (keeps the cursor and undo)
+function jbSetPage(page){
+  const old = text(), t = withPage(old, page);
+  if (t === old) return;
+  let tail = 0; while (tail < t.length && tail < old.length && t[t.length - 1 - tail] === old[old.length - 1 - tail]) tail++;
+  view.dispatch({ changes: { from: 0, to: old.length - tail, insert: t.slice(0, t.length - tail) }, userEvent: 'input' });
+}
+async function jbSaveNote(){
+  if (cur.kind === 'lib') await save(false, true);
+  else if (cur.kind === 'loose' && cur.ref) await save(false);
+}
+
+// pictures in a library note go up to JotBird first (account only)
+async function jbPictures(md){
+  const found = [...md.matchAll(/!\[\[([^\]|]+\.(?:png|jpe?g|gif|webp))(?:\|[^\]]*)?\]\]|!\[([^\]]*)\]\((?!https?:)([^)\s]+\.(?:png|jpe?g|gif|webp))\)/gi)];
+  if (!found.length) return { md, skipped: 0 };
+  if (!jb.key || cur.kind !== 'lib' || !lib) return { md, skipped: found.length };
+  let skipped = 0;
+  for (const m of found){
+    let p = m[1] ? findFile(m[1]) : (() => { let s = m[3]; try { s = decodeURI(s); } catch (_) {} return normPath(joinPath(dirname(cur.path), s)); })();
+    try {
+      if (!p) throw 0;
+      const url = await uploadImage(jb.key, await lib.fs.readBin(p), basename(p));
+      md = md.split(m[0]).join(`![${m[2] || ''}](${url})`);
+    } catch (_) { skipped++; }
+  }
+  return { md, skipped };
+}
+
+async function jbPublish(){
+  if (jb.busy) return;
+  const t = text(), old = pageOf(t);
+  if (!t.replace(/^---\n[\s\S]*?\n---\n?/, '').trim()){ toast('This note is empty'); return; }
+  if (!old && jbOpt('ask') && !(await confirmBox(`Publish “${cur.name.replace(/\.md$/i, '')}” as a web page?`, 'Publish'))) return;
+  jb.busy = true; toast(old ? 'Updating the page…' : 'Publishing…');
+  try {
+    const title = pageTitle(t, cur.name), doc = old ? jbDocs()[old.slug] || {} : {};
+    const { md, skipped } = await jbPictures(pageText(t, title));
+    const r = await publish({ key: jb.key, fp: jb.fp, markdown: md, title, slug: old?.slug, documentId: doc.documentId, editToken: doc.editToken });
+    jbSaveDoc(r.slug, { documentId: r.documentId, ...(r.editToken ? { editToken: r.editToken } : {}) });
+    jbSetPage({ link: r.url, expires: r.ttlDays ? (r.expiresAt || '').slice(0, 10) : 'never' });
+    await jbSaveNote(); jbChip(); jb.pages = null; jbRefreshList();
+    if (jbOpt('copy', true)){ try { await navigator.clipboard.writeText(r.url); } catch (_) {} }
+    const what = old ? 'Page updated' : 'Published';
+    toast(skipped ? `${what}. ${skipped} picture${skipped > 1 ? 's' : ''} left out${jb.key ? '' : ' (pictures need a free account)'}` : jbOpt('copy', true) ? `${what} · link copied` : what);
+  } catch (e){ toast("Couldn't publish: " + e.message); }
+  finally { jb.busy = false; }
+}
+
+async function jbUnpublish(){
+  const p = jbHere(); if (!p) return;
+  if (!(await confirmBox('Take this page off the web? The link stops working. The note itself stays as it is.', 'Unpublish'))) return;
+  const doc = jbDocs()[p.slug] || {};
+  try {
+    if (!jb.key && !doc.editToken) throw new Error('this page was published from another device or app. Log in to JotBird to remove it');
+    await unpublish({ key: jb.key, fp: jb.fp, slug: p.slug, documentId: doc.documentId, editToken: doc.editToken });
+  } catch (e){
+    if (!/not found|404/i.test(e.message)){ toast("Couldn't unpublish: " + e.message); return; }   // already gone: just tidy the note
+  }
+  jbSaveDoc(p.slug, null); jbSetPage(null); await jbSaveNote(); jbChip(); jb.pages = null; jbRefreshList();
+  toast('Unpublished');
+}
+
+/* the Published list: notes in the library with a JotBird link, soonest to expire first, plus (with an account)
+   pages that aren't in this library */
+async function jbListHtml(reread){
+  if (!lib) return '<div class="empty">Open a library (Files tab) to see its published notes.</div>';
+  if (reread || !noteTexts.length) await readNotes();
+  const notes = [];
+  for (const { f, lines } of noteTexts){
+    const p = pageOf(lines.join('\n'));
+    if (p) notes.push({ f, p, d: daysLeft(p.expires) });
+  }
+  const order = x => x.d == null ? 1e9 : x.d;
+  notes.sort((a, b) => order(a) - order(b));
+  let html = notes.map(({ f, p, d }) => `<button class="pg ${dayClass(d)}${cur.kind === 'lib' && cur.path === f.path ? ' on' : ''}" data-path="${esc(f.path)}" data-link="${esc(p.link)}">${esc(f.name.replace(/\.md$/i, ''))}<small>${leftText(d)}</small></button>`).join('')
+    || '<div class="empty">No published notes yet. Open a note and pick Publish this note in ▾ JotBird ▸.</div>';
+  if (jb.key){
+    if (!jb.pages) jb.pages = await listPages(jb.key).then(r => r.documents || []).catch(() => []);
+    const mine = new Set(notes.map(n => n.p.slug));
+    const other = jb.pages.filter(pg => !mine.has(pg.slug)).map(pg => ({ pg, d: daysLeft(pg.expiresAt) })).sort((a, b) => order(a) - order(b));
+    if (other.length) html += '<div class="head">On your JotBird account (not in this library)</div>' + other.map(({ pg, d }) =>
+      `<button class="pg ${dayClass(d)}" data-link="${esc(pg.url)}">${esc(pg.title || pg.slug)}<small>${leftText(d)}</small></button>`).join('');
+  }
+  return html;
+}
+async function jbRefreshList(reread){
+  if (!$('#pubPane').hidden) $('#pubList').innerHTML = await jbListHtml(reread);
+  if (!$('#jbDlg').hidden && $('#jbBody .publist')) $('#jbBody .publist').innerHTML = await jbListHtml(reread);
+}
+function jbListClick(e){
+  const b = e.target.closest('button.pg'); if (!b) return;
+  if (!b.dataset.path){ host.openExternal(b.dataset.link); return; }
+  $('#jbDlg').hidden = true;
+  openLibFile(b.dataset.path, e.ctrlKey || e.metaKey).then(() => jbRefreshList());
+  if (window.innerWidth <= 700) toggleSide(false);
+}
+function jbListMenu(e){
+  const b = e.target.closest('button.pg'); if (!b) return;
+  e.preventDefault();
+  const link = b.dataset.link, path = b.dataset.path;
+  showCtx(e.clientX, e.clientY, [
+    ...(path ? [['Open note', () => openLibFile(path)], ['Update page', async () => { await openLibFile(path); jbPublish(); }]] : []),
+    ['Open page', () => host.openExternal(link)],
+    ['Copy link', () => jbCopy(link)],
+  ]);
+}
+for (const id of ['#pubList', '#jbBody']){
+  $(id).addEventListener('click', jbListClick);
+  $(id).addEventListener('contextmenu', jbListMenu);
+}
+
+function jbDialog(title, html){
+  $('#jbTitle').textContent = title; $('#jbBody').innerHTML = html; $('#jbDlg').hidden = false;
+}
+$('#jbClose').addEventListener('click', () => { $('#jbDlg').hidden = true; });
+$('#jbDlg').addEventListener('click', e => { if (e.target.id === 'jbDlg') $('#jbDlg').hidden = true; });
+async function jbList(){
+  jbDialog('Published notes', '<div class="publist"><div class="empty">Reading notes…</div></div>');
+  $('#jbBody .publist').innerHTML = await jbListHtml(true);
+}
+
+function jbSettings(){
+  const sw = (k, def) => jbOpt(k, def) ? 'On' : 'Off';
+  jbDialog('JotBird', `
+    <div class="set"><div>Account<small>${jb.key ? 'Logged in · links last 90 days' : 'Not logged in · links last 30 days'}</small></div><button data-a="acct">${jb.key ? 'Log out' : 'Log in'}</button></div>
+    <div class="set"><div>Copy the link after publishing</div><button data-a="copy">${sw('copy', true)}</button></div>
+    <div class="set"><div>Ask before publishing<small>A quick “Publish this note?” check</small></div><button data-a="ask">${sw('ask')}</button></div>
+    <div class="set"><div>Turn off JotBird<small>Hides it again; the ▾ menu goes back to just “Publish…”. Pages stay online.</small></div><button data-a="off">Turn off</button></div>`);
+}
+$('#jbBody').addEventListener('click', async e => {
+  const a = e.target.closest('button[data-a]')?.dataset.a; if (!a) return;
+  if (a === 'copy' || a === 'ask'){ store.set('jb.' + a, jbOpt(a, a === 'copy') ? '0' : '1'); jbSettings(); }
+  else if (a === 'acct'){
+    if (jb.key){ jb.key = ''; store.set('jb.key', ''); jb.pages = null; toast('Logged out of JotBird'); }
+    else { $('#jbDlg').hidden = true; await jbLogin(); }
+    jbSettings(); jbRefreshList();
+  } else if (a === 'off'){
+    if (!(await confirmBox('Turn off JotBird? Your pages stay online and the links stay in your notes.', 'Turn off'))) return;
+    jb.on = false; store.set('jb.on', ''); jb.key = ''; store.set('jb.key', ''); jb.pages = null;
+    $('#jbDlg').hidden = true; jbRefresh(); toast('JotBird is off');
+  }
+});
+$('#bShowPub').addEventListener('click', () => { store.set('hide.published', store.get('hide.published') ? '' : '1'); jbRefresh(); });
+
 /* ---------------- Boot ---------------- */
 cm = createEditor(pane, {
   command: name => FORMATS[name](),
@@ -1589,7 +1830,8 @@ if (host.onOpenFile) host.onOpenFile(async f => { await openInTab(f.text, { kind
   libs = (await kvGet('libs')) || [];
   const v = store.get('view'); setView(['live', 'editor', 'split', 'preview'].includes(v) ? v : 'live');
   setTabShown('outline', !store.get('hide.outline')); setTabShown('tags', !store.get('hide.tags'));
-  showTab((t => t !== 'files' && store.get('hide.' + t) ? 'files' : t)(store.get('tab') || 'files'));
+  jbRefresh();
+  showTab((t => t !== 'files' && (store.get('hide.' + t) || (t === 'published' && !jb.on)) ? 'files' : t)(store.get('tab') || 'files'));
   if (store.get('side') && window.innerWidth > 700) toggleSide(true);
   const libId = store.get('lib'), want = libs.find(l => l.id === libId);
   if (want && !(await host.ready(want, false))) renderLibEmpty(want);
@@ -1629,6 +1871,7 @@ if (host.onOpenFile) host.onOpenFile(async f => { await openInTab(f.text, { kind
 window.__mpBack = () => {
   if (!$('#ask').hidden){ $('#ask').hidden = true; return true; }
   if (!$('#qs').hidden){ $('#qs').hidden = true; return true; }
+  if (!$('#jbDlg').hidden){ $('#jbDlg').hidden = true; return true; }
   if (!ctx.hidden){ ctx.hidden = true; return true; }
   if (menu.open){ menu.open = false; return true; }
   if (document.body.classList.contains('focus')){ setFocus(false); return true; }

@@ -179,7 +179,20 @@ function markdown(src){
     const m = !inFence && l.match(DEF_RE);
     if (m) refs[esc(m[1]).toLowerCase()] = esc(m[2]);
   }
-  return blocks(lines, false, true);
+  // frontmatter (Obsidian's "properties") shows as a small grey box; its lines become blank so line numbers stay put
+  let props = '';
+  if (lines[0] === '---'){
+    const end = lines.indexOf('---', 1);
+    if (end > 0){
+      props = '<div class="props" data-line="0">' + lines.slice(1, end).filter(l => l.trim()).map(l => {
+        const [, k, v] = l.match(/^([^:]+):\s*(.*)$/) || [, '', l];
+        const val = /^["']?https?:\/\/\S+["']?$/.test(v.trim()) ? (u => `<a href="${esc(u)}">${esc(u)}</a>`)(v.trim().replace(/^["']|["']$/g, '')) : esc(v);
+        return `<div><span>${esc(k.trim())}</span>${val}</div>`;
+      }).join('') + '</div>';
+      for (let i = 0; i <= end; i++) lines[i] = '';
+    }
+  }
+  return props + blocks(lines, false, true);
 }
 
 export { TAG_RE, markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, LIST_RE, IMG_EXT };

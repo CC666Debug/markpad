@@ -38,6 +38,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var web: WebView
     private lateinit var frame: FrameLayout
     private val io = Executors.newSingleThreadExecutor()
+    private val net = Executors.newSingleThreadExecutor()   // JotBird requests, so a slow network never holds up files
     private var pickerDone: ((Intent?) -> Unit)? = null
     private val picker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         val cb = pickerDone
@@ -138,6 +139,9 @@ class MainActivity : AppCompatActivity() {
                         JSONObject().put("uri", u.toString()).put("name", name).toString()
                     }
                 }
+                "http" -> net.execute {
+                    try { done(id, true, http(a)) } catch (e: Exception) { done(id, false, JSONObject.quote(e.message ?: e.toString())) }
+                }
                 else -> run(id) {
                     when (method) {
                         "startupFile" -> startUri?.let { u -> startUri = null; looseFile(u) }
@@ -226,6 +230,29 @@ class MainActivity : AppCompatActivity() {
     private fun print() {
         val pm = getSystemService(PRINT_SERVICE) as PrintManager
         pm.print("Markpad", web.createPrintDocumentAdapter("Markpad"), PrintAttributes.Builder().build())
+    }
+
+    // JotBird publishing (api.jotbird.com only): the site blocks requests from web pages, so the page asks the app.
+    // Body comes as text or base64 (pictures); 4xx/5xx answers come back as a status, not an error.
+    private fun http(a: JSONObject): String {
+        val url = a.getString("url")
+        require(url.startsWith("https://api.jotbird.com/")) { "only JotBird can be reached" }
+        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        c.requestMethod = a.getString("method")
+        c.connectTimeout = 20000; c.readTimeout = 60000
+        val h = a.optJSONObject("headers") ?: JSONObject()
+        for (k in h.keys()) c.setRequestProperty(k, h.getString(k))
+        val bytes = when {
+            a.has("bodyB64") -> Base64.decode(a.getString("bodyB64"), Base64.DEFAULT)
+            a.has("body") -> a.getString("body").toByteArray()
+            else -> null
+        }
+        if (bytes != null) { c.doOutput = true; c.outputStream.use { it.write(bytes) } }
+        val status = c.responseCode
+        val body = (if (status >= 400) c.errorStream else c.inputStream)?.use { it.readBytes().toString(Charsets.UTF_8) } ?: ""
+        val reply = JSONObject().put("status", status).put("body", body).put("retryAfter", c.getHeaderField("Retry-After") ?: "")
+        c.disconnect()
+        return reply.toString()
     }
 
     private fun openExternal(url: String) {
