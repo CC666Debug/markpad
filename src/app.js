@@ -9,7 +9,7 @@ import { makeZip, readZip } from './zip.js';
 import { host } from './host.js';
 import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.6.0';
+const VERSION = '2.6.1';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -1505,25 +1505,45 @@ $('#focusExit').addEventListener('click', () => setFocus(false));
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && document.body.classList.contains('focus')) setFocus(false); });
 
 const menu = $('#moreMenu');
-// The ▾ menu's sections (Export, Checklists, Settings, Recent, Backup) open beside it, on hover with a mouse or on a tap
+// The ▾ menu's sections open beside it, on hover with a mouse or on a tap. Settings holds two more (Checklists, Backup):
+// with a mouse they open beside Settings; on a phone they take Settings' place, with ‹ Back at the top.
 const panels = [...menu.querySelectorAll('.panel')];
-function closePanels(){ for (const p of panels) p.hidden = true; for (const b of menu.querySelectorAll('.has-sub')) b.classList.remove('open'); }
-function openPanel(trigger){
-  const p = $('#' + trigger.dataset.panel);
-  ctxSub.hidden = true; closePanels();
-  trigger.classList.add('open'); p.hidden = false;
-  const r = trigger.getBoundingClientRect(), w = p.offsetWidth;
+const place = (p, r) => {
+  const w = p.offsetWidth;
   p.style.left = (r.right - 4 + w > innerWidth - 4 ? Math.max(4, r.left - w + 4) : r.right - 4) + 'px';
   p.style.top = Math.max(4, Math.min(r.top - 5, innerHeight - p.offsetHeight - 8)) + 'px';
+};
+function closePanels(only){
+  for (const p of panels) if (!only || p.dataset.parent === only){ p.hidden = true; $(`[data-panel="${p.id}"]`)?.classList.remove('open'); }
+}
+function openPanel(trigger){
+  const p = $('#' + trigger.dataset.panel), parent = p.dataset.parent && $('#' + p.dataset.parent);
+  ctxSub.hidden = true;
+  if (parent){
+    closePanels(parent.id);
+    trigger.classList.add('open'); p.hidden = false;
+    if (hoverable.matches) place(p, trigger.getBoundingClientRect());
+    else { p.style.left = parent.style.left; p.style.top = parent.style.top; parent.hidden = true; }   // drill down
+    return;
+  }
+  closePanels();
+  trigger.classList.add('open'); p.hidden = false;
+  place(p, trigger.getBoundingClientRect());
 }
 menu.querySelector('.menu-list').addEventListener('mouseover', e => {
-  const b = e.target.closest('button'); if (!b || !hoverable.matches || b.closest('.panel')) return;
-  if (b.dataset.panel){ if (!b.classList.contains('open')) openPanel(b); }
-  else { closePanels(); if (b.id !== 'bJb') ctxSub.hidden = true; }
+  const b = e.target.closest('button'); if (!b || !hoverable.matches) return;
+  const inPanel = b.closest('.panel');
+  if (b.dataset.panel){ if (!b.classList.contains('open')) openPanel(b); return; }
+  if (inPanel){ if (!inPanel.dataset.parent) closePanels(inPanel.id); return; }   // other Settings items close Checklists/Backup
+  closePanels(); if (b.id !== 'bJb') ctxSub.hidden = true;
 });
 for (const b of menu.querySelectorAll('.has-sub')) b.addEventListener('click', e => {
   e.preventDefault();
-  if (b.classList.contains('open') && !hoverable.matches) closePanels(); else openPanel(b);
+  if (b.classList.contains('open') && !hoverable.matches && !b.closest('.panel')) closePanels(); else openPanel(b);
+});
+for (const b of menu.querySelectorAll('.panel .back')) b.addEventListener('click', e => {
+  const p = b.closest('.panel'), parent = $('#' + p.dataset.parent);
+  e.preventDefault(); p.hidden = true; $(`[data-panel="${p.id}"]`)?.classList.remove('open'); parent.hidden = false;
 });
 menu.addEventListener('toggle', () => {
   if (!menu.open){ ctxSub.hidden = true; closePanels(); return; }

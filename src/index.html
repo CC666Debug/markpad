@@ -57,6 +57,8 @@ details.menu summary:hover{background:var(--hover)}
 .menu-list .panel{position:fixed;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.14);z-index:21;min-width:220px;max-width:min(320px,94vw);display:flex;flex-direction:column;max-height:calc(100vh - 16px);overflow-y:auto}
 .menu-list .panel[hidden]{display:none}
 .menu-list .has-sub.open{background:var(--hover)}
+.menu-list .panel .back{color:var(--muted);border-bottom:1px solid var(--border);border-radius:6px 6px 0 0;margin-bottom:2px}
+@media (hover:hover) and (pointer:fine){ .menu-list .panel .back{display:none} }
 .menu-list .recentmax{margin:2px 8px 4px;align-self:flex-start}
 .menu-list .recentmax button{width:auto;min-width:34px;justify-content:center}
 /* the top bar and file tabs slide sideways when the window is narrow: soft edges show there's more */
@@ -328,23 +330,24 @@ body.focus .cm-scroller{font-size:17px!important}
       <button id="bSearch">Search in notes / #tags…<span class="key">Ctrl+Shift+P</span></button>
       <button class="has-sub" data-panel="pExport">Export<span class="key">▸</span></button>
       <button id="bJb" hidden title="Share this note as a web page (JotBird)">Publish…</button>
-      <button class="has-sub" data-panel="pChecklists">Checklists<span class="key">▸</span></button>
       <button class="has-sub" data-panel="pSettings">Settings<span class="key">▸</span></button>
       <button class="has-sub" data-panel="pRecent">Recent<span class="key">▸</span></button>
-      <button class="has-sub" data-panel="pBackup">Backup<span class="key">▸</span></button>
       <div class="sub" id="aboutLine"></div>
       <div class="panel" id="pExport" hidden>
         <button id="bExport">Export as HTML</button>
         <button id="bDocx" title="Opens in Word, Google Docs and LibreOffice">Export as Word (.docx)</button>
         <button id="bPrint">Print / Save as PDF</button>
       </div>
-      <div class="panel" id="pChecklists" hidden>
+      <div class="panel" id="pChecklists" data-parent="pSettings" hidden>
+        <button class="back">‹ Back</button>
         <button id="bStrike" class="tog" aria-pressed="true">Cross out completed items</button>
         <button id="bMoveDone" class="tog" aria-pressed="false" title="Like Google Keep: ticked items drop to the end of their list, under a “checked items” fold">Move completed items to the bottom</button>
         <button id="bUncheck">Uncheck all</button>
         <button id="bDelDone">Delete completed items…</button>
       </div>
       <div class="panel" id="pSettings" hidden>
+        <button class="has-sub" data-panel="pChecklists">Checklists<span class="key">▸</span></button>
+        <button class="has-sub" data-panel="pBackup">Backup<span class="key">▸</span></button>
         <button id="bAutosave" class="tog" aria-pressed="true">Auto-save library notes</button>
         <button id="bNewTabs" class="tog" aria-pressed="false" title="Off: a note replaces the current tab (Ctrl+click or middle-click for a new tab)">Open notes in a new tab</button>
         <button id="bShowOutline" class="tog" aria-pressed="true">Show Outline tab</button>
@@ -360,7 +363,8 @@ body.focus .cm-scroller{font-size:17px!important}
         </div>
         <button id="bRecentClear">Clear the list</button>
       </div>
-      <div class="panel" id="pBackup" hidden>
+      <div class="panel" id="pBackup" data-parent="pSettings" hidden>
+        <button class="back">‹ Back</button>
         <button id="bBackup" title="All notes and pictures of the open library in one zip, optionally with a password">Back up notes…</button>
         <button id="bRestore" title="Unpacks a backup zip into a new “Restored” folder; nothing is overwritten">Restore from backup…</button>
       </div>
