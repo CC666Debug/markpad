@@ -238,7 +238,7 @@ class MainActivity : AppCompatActivity() {
         val url = a.getString("url")
         require(url.startsWith("https://api.jotbird.com/")) { "only JotBird can be reached" }
         val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-        c.requestMethod = a.getString("method")
+        setMethod(c, a.getString("method"))
         c.connectTimeout = 20000; c.readTimeout = 60000
         val h = a.optJSONObject("headers") ?: JSONObject()
         for (k in h.keys()) c.setRequestProperty(k, h.getString(k))
@@ -253,6 +253,22 @@ class MainActivity : AppCompatActivity() {
         val reply = JSONObject().put("status", status).put("body", body).put("retryAfter", c.getHeaderField("Retry-After") ?: "")
         c.disconnect()
         return reply.toString()
+    }
+
+    // Some Android versions refuse PATCH (JotBird's page settings use it), so set it underneath when they do.
+    private fun setMethod(c: java.net.HttpURLConnection, m: String) {
+        try { c.requestMethod = m; return } catch (_: java.net.ProtocolException) {}
+        val field = java.net.HttpURLConnection::class.java.getDeclaredField("method").apply { isAccessible = true }
+        field.set(c, m)
+        // https connections pass the work to an inner connection: set it there too
+        var k: Class<*>? = c.javaClass
+        while (k != null) {
+            try {
+                val d = k.getDeclaredField("delegate").apply { isAccessible = true }.get(c)
+                if (d is java.net.HttpURLConnection) field.set(d, m)
+                break
+            } catch (_: NoSuchFieldException) { k = k.superclass }
+        }
     }
 
     private fun openExternal(url: String) {

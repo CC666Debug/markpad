@@ -5,9 +5,9 @@ import { TAG_RE, markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_E
 import { createEditor } from './editor.js';
 import { makeZip, readZip } from './zip.js';
 import { host } from './host.js';
-import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE } from './jotbird.js';
+import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.4.0';
+const VERSION = '2.5.0';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -679,28 +679,57 @@ function openLink(href){
 
 // right-click (long-press on phones) on the file tree
 const ctx = $('#ctx');
-function showCtx(x, y, items){
-  ctx.innerHTML = '';
-  for (const [label, fn] of items){
-    const b = document.createElement('button'); b.textContent = label;
-    b.onclick = () => { ctx.hidden = true; fn(); };
-    ctx.appendChild(b);
+// Menus: items are [label, fn] or [label, null, subItems]. A submenu opens beside its item, on hover with a mouse.
+const ctxSub = $('#ctxSub'), hoverable = matchMedia('(hover: hover) and (pointer: fine)');
+const closeCtx = () => { ctx.hidden = true; ctxSub.hidden = true; };
+function fillMenu(box, items){
+  box.innerHTML = '';
+  for (const [label, fn, sub] of items){
+    const b = document.createElement('button');
+    if (sub){
+      b.innerHTML = esc(label) + '<span class="key">▸</span>';
+      b.onclick = e => { e.stopPropagation(); showSub(b, sub); };
+      b.onmouseenter = () => { if (hoverable.matches) showSub(b, sub); };
+    } else {
+      b.textContent = label;
+      b.onclick = () => { closeCtx(); menu.open = false; fn(); };
+      if (box === ctx) b.onmouseenter = () => { if (hoverable.matches) ctxSub.hidden = true; };
+    }
+    box.appendChild(b);
   }
+}
+function showSub(anchor, items){
+  fillMenu(ctxSub, items);
+  ctxSub.hidden = false;
+  const r = anchor.getBoundingClientRect(), w = ctxSub.offsetWidth;
+  ctxSub.style.left = (r.right - 4 + w > innerWidth - 4 ? Math.max(4, r.left - w + 4) : r.right - 4) + 'px';
+  ctxSub.style.top = Math.max(4, Math.min(r.top - 5, innerHeight - ctxSub.offsetHeight - 8)) + 'px';
+}
+// above: the menu opens upward from y (for things at the bottom of the window)
+function showCtx(x, y, items, above){
+  ctxSub.hidden = true;
+  fillMenu(ctx, items);
   ctx.hidden = false;
   ctx.style.left = Math.min(x, innerWidth - 200) + 'px';
-  ctx.style.top = Math.min(y, innerHeight - ctx.offsetHeight - 8) + 'px';
+  ctx.style.top = Math.max(4, above ? y - ctx.offsetHeight : Math.min(y, innerHeight - ctx.offsetHeight - 8)) + 'px';
 }
-document.addEventListener('pointerdown', e => { if (!ctx.hidden && !ctx.contains(e.target)) ctx.hidden = true; });
-$('#tree').addEventListener('contextmenu', e => {
+document.addEventListener('pointerdown', e => { if (!ctx.contains(e.target) && !ctxSub.contains(e.target) && e.target.id !== 'bJb') closeCtx(); });
+$('#tree').addEventListener('contextmenu', async e => {
   const b = e.target.closest('.row'); if (!b) return;
   e.preventDefault();
-  const p = b.dataset.path, isDir = !!b.dataset.dir, dir = isDir ? p : dirname(p);
-  showCtx(e.clientX, e.clientY, [
+  const p = b.dataset.path, isDir = !!b.dataset.dir, dir = isDir ? p : dirname(p), x = e.clientX, y = e.clientY;
+  const items = [
     ['New note here', async () => { const n = await ask('New note', { input: 'Untitled' }); if (n) createNote(dir, n); }],
     ['New folder here', () => newFolder(dir)],
     ['Rename…', () => renamePath(p, isDir)],
     ['Delete (move to .trash)', () => trashPath(p, isDir)],
-  ]);
+  ];
+  // published notes get their JotBird options
+  if (jb.on && !isDir && isNote(p)){
+    const pg = pageOf(cur.kind === 'lib' && cur.path === p ? text() : (tabs.find(t => t.cur.kind === 'lib' && t.cur.path === p)?.state.doc.toString() ?? await lib.fs.read(p).catch(() => '')));
+    if (pg) items.push(['Published', null, jbNoteItems(p, pg)]);
+  }
+  showCtx(x, y, items);
 });
 async function newFolder(dir = selectedDir()){
   const n = await ask('New folder', { input: 'New folder' });
@@ -1425,8 +1454,9 @@ $('#focusExit').addEventListener('click', () => setFocus(false));
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && document.body.classList.contains('focus')) setFocus(false); });
 
 const menu = $('#moreMenu');
+menu.querySelector('.menu-list').addEventListener('mouseover', e => { const b = e.target.closest('button'); if (b && b.id !== 'bJb' && hoverable.matches) ctxSub.hidden = true; });
 menu.addEventListener('toggle', () => {
-  if (!menu.open) return;
+  if (!menu.open){ ctxSub.hidden = true; return; }
   const r = menu.querySelector('summary').getBoundingClientRect(), list = menu.querySelector('.menu-list');
   list.style.top = r.bottom + 'px';
   list.style.left = Math.min(r.left, window.innerWidth - 300) + 'px';
@@ -1496,6 +1526,7 @@ document.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey;
   if (!$('#ask').hidden || !$('#qs').hidden) return;
   if (e.key === 'Escape'){
+    if (!ctxSub.hidden){ ctxSub.hidden = true; return; }
     if (!ctx.hidden){ ctx.hidden = true; return; }
     if (menu.open){ menu.open = false; return; }
     if (!$('#jbDlg').hidden){ $('#jbDlg').hidden = true; return; }
@@ -1551,26 +1582,41 @@ host.onClose(async () => { await flush(); saveSession(true); await new Promise(r
 
 /* ---------------- JotBird: publish a note as a web page ---------------- */
 // Only the apps can publish (JotBird blocks web pages). Until it's set up, the ▾ menu shows just "Publish…";
-// after that a JotBird ▸ menu, the "Published" chip on published notes, and the Published tab.
+// after that a JotBird ▸ menu, the "Published" label after the note name at the bottom, and the Published tab.
 // The link lives in the note itself (jotbird_link / jotbird_expires, same as JotBird's Obsidian plugin).
 // The account key and the edit tokens of no-account pages stay on this device.
+// Pro things (page styles, hiding JotBird's line, passwords) only ever show when the account is Pro.
 const jb = {
   can: !!host.http,
   on: store.get('jb.on') === '1',
   key: store.get('jb.key') || '',
+  pro: store.get('jb.pro') === '1',
   fp: store.get('jb.fp') || (() => { const f = crypto.randomUUID(); store.set('jb.fp', f); return f; })(),
-  busy: false, pages: null,   // pages: the account's own list, fetched when the Published tab opens
+  busy: false, pages: null,   // pages: the account's own list (with real expiry dates)
 };
 const jbDocs = () => { try { return JSON.parse(store.get('jb.docs') || '{}'); } catch (_) { return {}; } };
 const jbSaveDoc = (slug, info) => { const d = jbDocs(); if (info) d[slug] = { ...d[slug], ...info }; else delete d[slug]; store.set('jb.docs', JSON.stringify(d)); };
 const jbOpt = (k, def) => (store.get('jb.' + k) ?? (def ? '1' : '')) === '1';
 const jbHere = () => jb.on ? pageOf(text()) : null;
-const dayClass = d => d != null && d < 0 ? 'gone' : d != null && d <= 7 ? 'soon' : '';
+// the account's own list knows the real expiry (Pro pages never expire), so it wins over the note's copy
+const jbDays = p => { const pg = jb.pages?.find(x => x.slug === p.slug); return daysLeft(pg ? pg.expiresAt : p.expires); };
+// green while more than a week is left, yellow at a week, red under a week, grey once gone
+const dayClass = d => d == null || d > 7 ? '' : d === 7 ? 'week' : d >= 0 ? 'soon' : 'gone';
+const jbOwned = p => jb.key && !(jbDocs()[p.slug] || {}).editToken;   // page belongs to the logged-in account
+
+async function jbCheckPro(){
+  if (!jb.key){ jb.pro = false; store.set('jb.pro', ''); return; }
+  try {
+    const r = await listPages(jb.key);
+    jb.pages = r.documents || []; jb.pro = !!r.isPro; store.set('jb.pro', jb.pro ? '1' : '');
+  } catch (_) {}
+  jbChip();
+}
 
 function jbRefresh(){
   const b = $('#bJb');
   b.hidden = !jb.can;
-  b.textContent = jb.on ? 'JotBird ▸' : 'Publish…';
+  b.innerHTML = jb.on ? 'JotBird<span class="key">▸</span>' : 'Publish…';
   $('#bShowPub').hidden = !jb.on;
   const tabOn = jb.on && !store.get('hide.published');
   document.querySelector('.tabs [data-tab="published"]').hidden = !tabOn;
@@ -1581,33 +1627,39 @@ function jbRefresh(){
 function jbChip(){
   const p = jbHere(), c = $('#jbChip');
   c.hidden = !p; if (!p) return;
-  const d = daysLeft(p.expires);
+  const d = jbDays(p);
   $('#jbChipText').textContent = d != null && d < 0 ? 'Expired' : 'Published' + (d != null ? ` · ${d}d` : '');
   c.className = dayClass(d);
   c.title = `${p.link} · ${leftText(d)}`;
 }
 
-// the JotBird options for the open note (▾ JotBird ▸, and the chip)
+// what can be done with a published note (the open one, or one picked in the file list or Published tab)
+function jbNoteItems(path, p){
+  const open = fn => async () => { if (path && !(cur.kind === 'lib' && cur.path === path)) await openLibFile(path); fn(); };
+  return [
+    [jbDays(p) < 0 ? 'Publish again' : 'Update page', open(() => jbPublish())],
+    ['Copy link', () => jbCopy(p.link)],
+    ['Open page', () => host.openExternal(p.link)],
+    ...(jbOwned(p) ? [['Page settings…', open(() => jbPageSettings())]] : []),
+    ['Unpublish…', open(() => jbUnpublish())],
+  ];
+}
+// the ▾ JotBird ▸ menu and the label's menu
 function jbItems(){
   const p = jbHere();
   return [
-    ...(p ? [
-      [daysLeft(p.expires) < 0 ? 'Publish again' : 'Update page', () => jbPublish()],
-      ['Copy link', () => jbCopy(p.link)],
-      ['Open page', () => host.openExternal(p.link)],
-      ['Unpublish…', () => jbUnpublish()],
-    ] : [['Publish this note', () => jbPublish()]]),
+    ...(p ? jbNoteItems(null, p) : [['Publish this note', () => jbPublish()]]),
     ['Published notes…', () => jbList()],
     ['JotBird settings…', () => jbSettings()],
   ];
 }
 $('#bJb').addEventListener('click', e => {
   if (!jb.on){ menu.open = false; jbSetup(); return; }
-  const r = e.currentTarget.getBoundingClientRect();
-  e.stopPropagation(); menu.open = false;
-  showCtx(window.innerWidth > 700 ? r.right - 6 : r.left + 16, window.innerWidth > 700 ? r.top : r.bottom, jbItems());
+  e.stopPropagation(); showSub(e.currentTarget, jbItems());
 });
-$('#jbChip').addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); e.stopPropagation(); showCtx(r.left, r.bottom + 4, jbItems()); });
+// on a computer it opens on hover, like any menu
+$('#bJb').addEventListener('mouseenter', e => { if (jb.on && hoverable.matches) showSub(e.currentTarget, jbItems()); });
+$('#jbChip').addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); e.stopPropagation(); showCtx(r.left, r.top - 4, jbItems(), true); });
 
 async function jbCopy(link){
   try { await navigator.clipboard.writeText(link); toast('Link copied'); }
@@ -1628,15 +1680,17 @@ async function jbLogin(){
   host.openExternal(KEY_PAGE);
   const key = await ask('Markpad opened jotbird.com in your browser. Log in (or make a free account), copy your API key, and paste it here.', { input: '', buttons: [{ label: 'Cancel', value: null }, { label: 'Log in', value: true, primary: true }] });
   if (!key) return false;
-  try { await listPages(key.trim()); }
+  let r;
+  try { r = await listPages(key.trim()); }
   catch (e){ toast("That key didn't work: " + e.message); return false; }
-  jb.key = key.trim(); store.set('jb.key', jb.key); jb.pages = null;
+  jb.key = key.trim(); store.set('jb.key', jb.key);
+  jb.pages = r.documents || []; jb.pro = !!r.isPro; store.set('jb.pro', jb.pro ? '1' : '');
   // pages made without an account on this device move into the account
-  const docs = jbDocs();
-  for (const [slug, d] of Object.entries(docs)) if (d.editToken){
+  for (const [slug, d] of Object.entries(jbDocs())) if (d.editToken){
     try { await claim(jb.key, slug, d.editToken); jbSaveDoc(slug, { editToken: undefined }); } catch (_) {}
   }
-  toast('Logged in to JotBird');
+  jb.pages = null; jbCheckPro();
+  toast(jb.pro ? 'Logged in to JotBird (Pro)' : 'Logged in to JotBird');
   return true;
 }
 
@@ -1653,13 +1707,13 @@ async function jbSaveNote(){
 }
 
 // pictures in a library note go up to JotBird first (account only)
-async function jbPictures(md){
+async function jbPictures(md, notePath){
   const found = [...md.matchAll(/!\[\[([^\]|]+\.(?:png|jpe?g|gif|webp))(?:\|[^\]]*)?\]\]|!\[([^\]]*)\]\((?!https?:)([^)\s]+\.(?:png|jpe?g|gif|webp))\)/gi)];
   if (!found.length) return { md, skipped: 0 };
-  if (!jb.key || cur.kind !== 'lib' || !lib) return { md, skipped: found.length };
+  if (!jb.key || !notePath || !lib) return { md, skipped: found.length };
   let skipped = 0;
   for (const m of found){
-    let p = m[1] ? findFile(m[1]) : (() => { let s = m[3]; try { s = decodeURI(s); } catch (_) {} return normPath(joinPath(dirname(cur.path), s)); })();
+    const p = m[1] ? findFile(m[1]) : (() => { let s = m[3]; try { s = decodeURI(s); } catch (_) {} return normPath(joinPath(dirname(notePath), s)); })();
     try {
       if (!p) throw 0;
       const url = await uploadImage(jb.key, await lib.fs.readBin(p), basename(p));
@@ -1667,6 +1721,14 @@ async function jbPictures(md){
     } catch (_) { skipped++; }
   }
   return { md, skipped };
+}
+// publish (or update) one note's text; returns the new { link, expires } and how many pictures were left out
+async function jbSend(t, name, notePath){
+  const old = pageOf(t), title = pageTitle(t, name), doc = old ? jbDocs()[old.slug] || {} : {};
+  const { md, skipped } = await jbPictures(pageText(t, title), notePath);
+  const r = await publish({ key: jb.key, fp: jb.fp, markdown: md, title, slug: old?.slug, documentId: doc.documentId, editToken: doc.editToken });
+  jbSaveDoc(r.slug, { documentId: r.documentId, ...(r.editToken ? { editToken: r.editToken } : {}) });
+  return { page: { link: r.url, expires: r.ttlDays ? (r.expiresAt || '').slice(0, 10) : 'never' }, skipped };
 }
 
 async function jbPublish(){
@@ -1676,13 +1738,10 @@ async function jbPublish(){
   if (!old && jbOpt('ask') && !(await confirmBox(`Publish “${cur.name.replace(/\.md$/i, '')}” as a web page?`, 'Publish'))) return;
   jb.busy = true; toast(old ? 'Updating the page…' : 'Publishing…');
   try {
-    const title = pageTitle(t, cur.name), doc = old ? jbDocs()[old.slug] || {} : {};
-    const { md, skipped } = await jbPictures(pageText(t, title));
-    const r = await publish({ key: jb.key, fp: jb.fp, markdown: md, title, slug: old?.slug, documentId: doc.documentId, editToken: doc.editToken });
-    jbSaveDoc(r.slug, { documentId: r.documentId, ...(r.editToken ? { editToken: r.editToken } : {}) });
-    jbSetPage({ link: r.url, expires: r.ttlDays ? (r.expiresAt || '').slice(0, 10) : 'never' });
-    await jbSaveNote(); jbChip(); jb.pages = null; jbRefreshList();
-    if (jbOpt('copy', true)){ try { await navigator.clipboard.writeText(r.url); } catch (_) {} }
+    const { page, skipped } = await jbSend(t, cur.name, cur.kind === 'lib' ? cur.path : null);
+    jbSetPage(page);
+    await jbSaveNote(); jb.pages = null; jbCheckPro(); jbChip(); jbRefreshList();
+    if (jbOpt('copy', true)){ try { await navigator.clipboard.writeText(page.link); } catch (_) {} }
     const what = old ? 'Page updated' : 'Published';
     toast(skipped ? `${what}. ${skipped} picture${skipped > 1 ? 's' : ''} left out${jb.key ? '' : ' (pictures need a free account)'}` : jbOpt('copy', true) ? `${what} · link copied` : what);
   } catch (e){ toast("Couldn't publish: " + e.message); }
@@ -1703,22 +1762,56 @@ async function jbUnpublish(){
   toast('Unpublished');
 }
 
+// Renew all: publish again every page with a week or less left (or already expired), which restarts its clock
+async function jbExpiring(){
+  if (!lib) return [];
+  await readNotes();
+  return noteTexts.map(({ f, lines }) => ({ f, p: pageOf(lines.join('\n')) })).filter(x => x.p && jbDays(x.p) != null && jbDays(x.p) <= 7);
+}
+async function jbRenewAll(){
+  if (jb.busy) return;
+  const list = await jbExpiring();
+  if (!list.length){ toast('Nothing is close to expiring'); return; }
+  if (!(await confirmBox(`Renew ${list.length} page${list.length > 1 ? 's' : ''} that expire${list.length > 1 ? '' : 's'} within a week? Each is published again${jb.pro ? ' and then never expires' : ` and gets a fresh ${jb.key ? '90' : '30'} days`}.`, 'Renew'))) return;
+  jb.busy = true; stash();
+  let done = 0, failed = 0;
+  for (const { f } of list){
+    toast(`Renewing ${done + failed + 1} of ${list.length}…`);
+    try {
+      const k = tabs.findIndex(t => t.cur.kind === 'lib' && t.cur.path === f.path);
+      const t = k >= 0 ? (k === active ? text() : tabs[k].state.doc.toString()) : await lib.fs.read(f.path);
+      const { page } = await jbSend(t, f.name, f.path);
+      if (k === active){ jbSetPage(page); await jbSaveNote(); }
+      else {
+        const nt = withPage(t, page);
+        if (k >= 0){ tabs[k].state = cm.newState(nt); if (!tabs[k].dirty) await lib.fs.write(f.path, nt); }
+        else await lib.fs.write(f.path, nt);
+      }
+      done++;
+    } catch (_) { failed++; }
+  }
+  jb.busy = false; jb.pages = null; await jbCheckPro(); jbRefreshList(true);
+  toast(failed ? `Renewed ${done}; ${failed} couldn't be renewed` : `Renewed ${done} page${done > 1 ? 's' : ''}`);
+}
+
 /* the Published list: notes in the library with a JotBird link, soonest to expire first, plus (with an account)
    pages that aren't in this library */
 async function jbListHtml(reread){
   if (!lib) return '<div class="empty">Open a library (Files tab) to see its published notes.</div>';
   if (reread || !noteTexts.length) await readNotes();
+  if (jb.key && !jb.pages) await jbCheckPro();
   const notes = [];
   for (const { f, lines } of noteTexts){
     const p = pageOf(lines.join('\n'));
-    if (p) notes.push({ f, p, d: daysLeft(p.expires) });
+    if (p) notes.push({ f, p, d: jbDays(p) });
   }
   const order = x => x.d == null ? 1e9 : x.d;
   notes.sort((a, b) => order(a) - order(b));
-  let html = notes.map(({ f, p, d }) => `<button class="pg ${dayClass(d)}${cur.kind === 'lib' && cur.path === f.path ? ' on' : ''}" data-path="${esc(f.path)}" data-link="${esc(p.link)}">${esc(f.name.replace(/\.md$/i, ''))}<small>${leftText(d)}</small></button>`).join('')
-    || '<div class="empty">No published notes yet. Open a note and pick Publish this note in ▾ JotBird ▸.</div>';
-  if (jb.key){
-    if (!jb.pages) jb.pages = await listPages(jb.key).then(r => r.documents || []).catch(() => []);
+  const soon = notes.filter(n => n.d != null && n.d <= 7).length;
+  let html = (soon ? `<button class="renew" data-a="renew">↻ Renew ${soon} expiring page${soon > 1 ? 's' : ''}</button>` : '') +
+    (notes.map(({ f, p, d }) => `<button class="pg ${dayClass(d)}${cur.kind === 'lib' && cur.path === f.path ? ' on' : ''}" data-path="${esc(f.path)}" data-link="${esc(p.link)}">${esc(f.name.replace(/\.md$/i, ''))}<small>${leftText(d)}</small></button>`).join('')
+    || '<div class="empty">No published notes yet. Open a note and pick Publish this note in ▾ JotBird ▸.</div>');
+  if (jb.key && jb.pages){
     const mine = new Set(notes.map(n => n.p.slug));
     const other = jb.pages.filter(pg => !mine.has(pg.slug)).map(pg => ({ pg, d: daysLeft(pg.expiresAt) })).sort((a, b) => order(a) - order(b));
     if (other.length) html += '<div class="head">On your JotBird account (not in this library)</div>' + other.map(({ pg, d }) =>
@@ -1731,31 +1824,36 @@ async function jbRefreshList(reread){
   if (!$('#jbDlg').hidden && $('#jbBody .publist')) $('#jbBody .publist').innerHTML = await jbListHtml(reread);
 }
 function jbListClick(e){
+  if (!e.target.closest('.publist')) return;
+  if (e.target.closest('[data-a="renew"]')){ $('#jbDlg').hidden = true; jbRenewAll(); return; }
   const b = e.target.closest('button.pg'); if (!b) return;
   if (!b.dataset.path){ host.openExternal(b.dataset.link); return; }
   $('#jbDlg').hidden = true;
   openLibFile(b.dataset.path, e.ctrlKey || e.metaKey).then(() => jbRefreshList());
   if (window.innerWidth <= 700) toggleSide(false);
 }
-function jbListMenu(e){
+async function jbListMenu(e){
   const b = e.target.closest('button.pg'); if (!b) return;
   e.preventDefault();
   const link = b.dataset.link, path = b.dataset.path;
-  showCtx(e.clientX, e.clientY, [
-    ...(path ? [['Open note', () => openLibFile(path)], ['Update page', async () => { await openLibFile(path); jbPublish(); }]] : []),
-    ['Open page', () => host.openExternal(link)],
-    ['Copy link', () => jbCopy(link)],
-  ]);
+  if (!path){ showCtx(e.clientX, e.clientY, [['Open page', () => host.openExternal(link)], ['Copy link', () => jbCopy(link)]]); return; }
+  const p = pageOf(cur.kind === 'lib' && cur.path === path ? text() : await lib.fs.read(path).catch(() => ''));
+  if (p) showCtx(e.clientX, e.clientY, [['Open note', () => openLibFile(path)], ...jbNoteItems(path, p)]);
 }
 for (const id of ['#pubList', '#jbBody']){
   $(id).addEventListener('click', jbListClick);
   $(id).addEventListener('contextmenu', jbListMenu);
 }
 
-function jbDialog(title, html){
-  $('#jbTitle').textContent = title; $('#jbBody').innerHTML = html; $('#jbDlg').hidden = false;
+// save: when given, the dialog shows Cancel + Save instead of Close
+let jbOnSave = null;
+function jbDialog(title, html, save){
+  $('#jbTitle').textContent = title; $('#jbBody').innerHTML = html; $('#jbBody').onclick = null; $('#jbDlg').hidden = false;
+  jbOnSave = save || null;
+  $('#jbCancel').hidden = !save; $('#jbClose').textContent = save ? 'Save' : 'Close';
 }
-$('#jbClose').addEventListener('click', () => { $('#jbDlg').hidden = true; });
+$('#jbClose').addEventListener('click', () => { if (jbOnSave) jbOnSave(); else $('#jbDlg').hidden = true; });
+$('#jbCancel').addEventListener('click', () => { $('#jbDlg').hidden = true; });
 $('#jbDlg').addEventListener('click', e => { if (e.target.id === 'jbDlg') $('#jbDlg').hidden = true; });
 async function jbList(){
   jbDialog('Published notes', '<div class="publist"><div class="empty">Reading notes…</div></div>');
@@ -1764,26 +1862,95 @@ async function jbList(){
 
 function jbSettings(){
   const sw = (k, def) => jbOpt(k, def) ? 'On' : 'Off';
+  const acct = !jb.key ? 'Not logged in · links last 30 days' : jb.pro ? 'Logged in · Pro · your pages never expire' : 'Logged in · free account · links last 90 days';
   jbDialog('JotBird', `
-    <div class="set"><div>Account<small>${jb.key ? 'Logged in · links last 90 days' : 'Not logged in · links last 30 days'}</small></div><button data-a="acct">${jb.key ? 'Log out' : 'Log in'}</button></div>
+    <div class="set"><div>Account<small>${acct}</small></div><button data-a="acct">${jb.key ? 'Log out' : 'Log in'}</button></div>
     <div class="set"><div>Copy the link after publishing</div><button data-a="copy">${sw('copy', true)}</button></div>
     <div class="set"><div>Ask before publishing<small>A quick “Publish this note?” check</small></div><button data-a="ask">${sw('ask')}</button></div>
+    <div class="set"><div>Renew expiring pages<small>Publishes again every page with a week or less left</small></div><button data-a="renew">Renew all</button></div>
     <div class="set"><div>Turn off JotBird<small>Hides it again; the ▾ menu goes back to just “Publish…”. Pages stay online.</small></div><button data-a="off">Turn off</button></div>`);
+  if (jb.key) jbCheckPro().then(() => { if ($('#jbTitle').textContent === 'JotBird' && !$('#jbDlg').hidden){
+    const s = $('#jbBody [data-a="acct"]')?.previousElementSibling?.querySelector('small');
+    if (s) s.textContent = jb.pro ? 'Logged in · Pro · your pages never expire' : 'Logged in · free account · links last 90 days';
+  } });
 }
+
+// one page's settings (account pages only). Visibility for everyone; style, branding and password only with Pro.
+async function jbPageSettings(){
+  const p = jbHere(); if (!p || !jbOwned(p)) return;
+  const target = { slug: p.slug, documentId: (jbDocs()[p.slug] || {}).documentId };
+  let save = () => { $('#jbDlg').hidden = true; };
+  jbDialog('Page settings', '<div class="empty">Asking JotBird…</div>', () => save());
+  let v;
+  try { [v] = await Promise.all([getSettings(jb.key, target), jbCheckPro()]); }
+  catch (e){ $('#jbBody').innerHTML = `<div class="empty">Couldn't load this page's settings: ${esc(e.message)}</div>`; return; }
+  if (v.namespaced) target.namespaced = true;
+  const want = { visibility: v.visibility, theme: v.theme, hideBranding: !!v.hideBranding, password: '' };
+  const choice = (key, val, label, tag) => `<button class="opt${want[key] === val ? ' on' : ''}" data-k="${key}" data-v="${val}">${label}${tag ? `<small>${tag}</small>` : ''}</button>`;
+  const draw = () => {
+    $('#jbBody').innerHTML = `
+      <div class="pageurl">${esc(v.url || p.link)}</div>
+      <div class="set col"><div>Who can find it</div><div class="opts">
+        ${choice('visibility', 'unlisted', 'Link only')}${choice('visibility', 'public', 'Public')}${jb.pro ? choice('visibility', 'password', 'Password', 'Pro') : ''}
+      </div>${want.visibility === 'password' ? `<input id="jbPw" type="password" placeholder="${v.visibility === 'password' ? 'Leave blank to keep the current password' : 'Password (4–64 characters)'}" value="${esc(want.password)}">` : ''}</div>
+      ${jb.pro ? `<div class="set col"><div>Page style</div><div class="opts">
+        ${Object.entries(PAGE_STYLES).map(([k, n]) => choice('theme', k, n, k === 'default' ? 'Free' : 'Pro')).join('')}
+      </div></div>
+      <div class="set"><div>Hide “Published with JotBird”<small>Pro</small></div><button class="opt${want.hideBranding ? ' on' : ''}" data-k="hideBranding" data-v="${!want.hideBranding}">${want.hideBranding ? 'Hidden' : 'Shown'}</button></div>` : ''}`;
+  };
+  draw();
+  $('#jbBody').onclick = async e => {
+    const o = e.target.closest('button[data-k]');
+    if (o){ if ($('#jbPw')) want.password = $('#jbPw').value; want[o.dataset.k] = o.dataset.k === 'hideBranding' ? o.dataset.v === 'true' : o.dataset.v; draw(); }
+  };
+  save = async () => {
+    if ($('#jbPw')) want.password = $('#jbPw').value;
+    const patch = {};
+    if (want.visibility !== v.visibility || want.password) patch.visibility = want.visibility;
+    if (want.visibility === 'password' && want.password){
+      if (want.password.length < 4 || want.password.length > 64){ toast('The password needs 4 to 64 characters'); return; }
+      patch.password = want.password;
+    } else if (want.visibility === 'password' && v.visibility !== 'password'){ toast('Type a password for the page'); return; }
+    if (jb.pro && want.theme !== v.theme) patch.theme = want.theme;
+    if (jb.pro && want.hideBranding !== !!v.hideBranding) patch.hideBranding = want.hideBranding;
+    if (!Object.keys(patch).length){ $('#jbDlg').hidden = true; return; }
+    try { await setSettings(jb.key, target, patch); $('#jbDlg').hidden = true; toast('Page settings saved'); }
+    catch (err){ toast("Couldn't save: " + err.message); }
+  };
+}
+
 $('#jbBody').addEventListener('click', async e => {
-  const a = e.target.closest('button[data-a]')?.dataset.a; if (!a) return;
+  const a = e.target.closest('button[data-a]')?.dataset.a; if (!a || $('#jbTitle').textContent !== 'JotBird') return;
   if (a === 'copy' || a === 'ask'){ store.set('jb.' + a, jbOpt(a, a === 'copy') ? '0' : '1'); jbSettings(); }
+  else if (a === 'renew'){ $('#jbDlg').hidden = true; jbRenewAll(); }
   else if (a === 'acct'){
-    if (jb.key){ jb.key = ''; store.set('jb.key', ''); jb.pages = null; toast('Logged out of JotBird'); }
+    if (jb.key){ jb.key = ''; store.set('jb.key', ''); jb.pro = false; store.set('jb.pro', ''); jb.pages = null; toast('Logged out of JotBird'); }
     else { $('#jbDlg').hidden = true; await jbLogin(); }
-    jbSettings(); jbRefreshList();
+    jbSettings(); jbRefreshList(); jbChip();
   } else if (a === 'off'){
     if (!(await confirmBox('Turn off JotBird? Your pages stay online and the links stay in your notes.', 'Turn off'))) return;
-    jb.on = false; store.set('jb.on', ''); jb.key = ''; store.set('jb.key', ''); jb.pages = null;
+    jb.on = false; store.set('jb.on', ''); jb.key = ''; store.set('jb.key', ''); jb.pro = false; store.set('jb.pro', ''); jb.pages = null;
     $('#jbDlg').hidden = true; jbRefresh(); toast('JotBird is off');
   }
 });
 $('#bShowPub').addEventListener('click', () => { store.set('hide.published', store.get('hide.published') ? '' : '1'); jbRefresh(); });
+
+/* ---------------- Accent color (per device) ---------------- */
+const ACCENTS = [['Blue', ''], ['Purple', '#8b5cf6'], ['Pink', '#e0457b'], ['Red', '#d64545'], ['Orange', '#e8730c'], ['Gold', '#c99a06'], ['Green', '#2f9e5a'], ['Teal', '#14a3a3']];
+function setAccent(c){
+  if (c) document.documentElement.style.setProperty('--accent', c); else document.documentElement.style.removeProperty('--accent');
+  store.set('accent', c || '');
+}
+setAccent(store.get('accent') || '');
+$('#bAccent').addEventListener('click', () => {
+  menu.open = false;
+  const now = store.get('accent') || '';
+  jbDialog('Accent color', `<div class="swatches">${ACCENTS.map(([n, c]) =>
+    `<button class="sw${c === now ? ' on' : ''}" data-c="${c}" title="${n}" style="--c:${c || '#3b6fd8'}"><span></span>${n}</button>`).join('')}
+    <label class="sw custom"><input type="color" id="accentPick" value="${now || '#3b6fd8'}"><span>Custom…</span></label></div>`);
+  $('#accentPick').addEventListener('input', e => setAccent(e.target.value));
+});
+$('#jbBody').addEventListener('click', e => { const s = e.target.closest('button.sw'); if (s){ setAccent(s.dataset.c); $('#jbBody').querySelectorAll('button.sw').forEach(b => b.classList.toggle('on', b === s)); } });
 
 /* ---------------- Boot ---------------- */
 cm = createEditor(pane, {
@@ -1830,7 +1997,7 @@ if (host.onOpenFile) host.onOpenFile(async f => { await openInTab(f.text, { kind
   libs = (await kvGet('libs')) || [];
   const v = store.get('view'); setView(['live', 'editor', 'split', 'preview'].includes(v) ? v : 'live');
   setTabShown('outline', !store.get('hide.outline')); setTabShown('tags', !store.get('hide.tags'));
-  jbRefresh();
+  jbRefresh(); if (jb.on && jb.key) jbCheckPro();
   showTab((t => t !== 'files' && (store.get('hide.' + t) || (t === 'published' && !jb.on)) ? 'files' : t)(store.get('tab') || 'files'));
   if (store.get('side') && window.innerWidth > 700) toggleSide(true);
   const libId = store.get('lib'), want = libs.find(l => l.id === libId);
@@ -1872,6 +2039,7 @@ window.__mpBack = () => {
   if (!$('#ask').hidden){ $('#ask').hidden = true; return true; }
   if (!$('#qs').hidden){ $('#qs').hidden = true; return true; }
   if (!$('#jbDlg').hidden){ $('#jbDlg').hidden = true; return true; }
+  if (!ctxSub.hidden){ ctxSub.hidden = true; return true; }
   if (!ctx.hidden){ ctx.hidden = true; return true; }
   if (menu.open){ menu.open = false; return true; }
   if (document.body.classList.contains('focus')){ setFocus(false); return true; }

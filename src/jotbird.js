@@ -12,13 +12,16 @@ async function call(path, { key, body, bodyB64, type = 'application/json', fp, m
   if (key) headers.Authorization = 'Bearer ' + key;
   if (fp) headers['X-Device-Fingerprint'] = fp;
   if (body !== undefined || bodyB64) headers['Content-Type'] = type;
-  const r = await host.http({ url: API + path, method, headers, ...(bodyB64 ? { bodyB64 } : body !== undefined ? { body: JSON.stringify(body) } : {}) });
+  if (method === 'GET') return finish(await host.http({ url: API + path, method, headers }), key);
+  return finish(await host.http({ url: API + path, method, headers, ...(bodyB64 ? { bodyB64 } : body !== undefined ? { body: JSON.stringify(body) } : {}) }), key);
+}
+function finish(r, key){
   let json; try { json = JSON.parse(r.body); } catch (_) { json = { error: r.body || 'no answer' }; }
   if (r.status === 429){
     const m = Math.max(1, Math.ceil((parseInt(r.retryAfter, 10) || 0) / 60));
     throw new Error(parseInt(r.retryAfter, 10) ? `JotBird is busy for you right now. Try again in about ${m} minute${m > 1 ? 's' : ''}.` : 'JotBird is busy for you right now. Try again later.');
   }
-  if (r.status === 401 || r.status === 403) throw new Error(key ? 'JotBird didn’t accept your key. Log in again in JotBird settings.' : (json.error || 'JotBird said no'));
+  if (r.status === 401) throw new Error(key ? 'JotBird didn’t accept your key. Log in again in JotBird settings.' : (json.error || 'JotBird said no'));
   if (r.status >= 400) throw new Error(json.error || `JotBird answered ${r.status}`);
   return json;
 }
@@ -32,7 +35,17 @@ export const unpublish = ({ key, fp, slug, documentId, editToken }) => key && !e
   ? call('/cli/documents/remove', { key, body: { slug, ...(documentId ? { documentId } : {}) } })
   : call('/trial/documents/delete', { fp, body: { slug, editToken: editToken || '' } });
 
-export const listPages = key => call('/cli/documents', { key });
+export const listPages = key => call('/cli/documents', { key });   // { documents, isPro }
+
+// Page settings (account pages only). Visibility is free; page styles other than Default, hiding the
+// "Published with JotBird" line and passwords need Pro.
+export const PAGE_STYLES = { default: 'Default', minimal: 'Minimal', essay: 'Essay', terminal: 'Terminal' };
+const settingsPath = (t, ns) => '/cli/settings?' + (t.documentId ? 'documentId=' + encodeURIComponent(t.documentId) : 'slug=' + encodeURIComponent(t.slug) + (ns ? '&namespaced=true' : ''));
+export async function getSettings(key, t){
+  try { return await call(settingsPath(t), { key, method: 'GET' }); }
+  catch (e){ if (t.documentId || !/not found|404/i.test(e.message)) throw e; return { ...(await call(settingsPath(t, true), { key, method: 'GET' })), namespaced: true }; }
+}
+export const setSettings = (key, t, patch) => call(settingsPath(t, t.namespaced), { key, method: 'PATCH', body: patch });
 export const claim = (key, slug, editToken) => call('/cli/claim', { key, body: { slug, editToken } });
 
 // pictures need an account; returns the picture's web address
@@ -61,8 +74,8 @@ export function pageOf(t){
 // days left (negative once expired), or null for pages that never expire
 export function daysLeft(expires){
   if (!/^\d{4}-\d{2}-\d{2}/.test(expires || '')) return null;
-  const end = new Date(expires.slice(0, 10) + 'T23:59:59');
-  return Math.ceil((end - Date.now()) / 864e5);
+  const [y, m, d] = expires.slice(0, 10).split('-').map(Number), now = new Date();
+  return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())) / 864e5);   // whole calendar days
 }
 export const leftText = d => d == null ? 'never expires' : d < 0 ? 'expired' : d === 0 ? 'expires today' : d === 1 ? '1 day left' : d + ' days left';
 

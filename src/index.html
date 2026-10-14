@@ -9,18 +9,19 @@
 :root{
   --bg:#fbfbfa; --panel:#f3f2ef; --text:#1f2328; --muted:#6b6f76; --border:#e2e0db;
   --accent:#3b6fd8; --code-bg:#efede8; --hover:#e7e5df; --mark:#fff1a8; --quote:#d6d3cc;
+  --jb-ok:#2f8a4c; --jb-week:#a87f00; --jb-soon:#cc3333;
   color-scheme:light;
 }
 @media (prefers-color-scheme:dark){
   :root:not([data-theme="light"]){
     --bg:#1b1c1f; --panel:#232428; --text:#e6e6e3; --muted:#9a9ca3; --border:#34363b;
-    --accent:#7aa2f7; --code-bg:#2a2c31; --hover:#2e3035; --mark:#6b5a12; --quote:#45474d;
+    --accent:#7aa2f7; --code-bg:#2a2c31; --hover:#2e3035; --mark:#6b5a12; --quote:#45474d; --jb-ok:#6cc48a; --jb-week:#e6c229; --jb-soon:#ff6b6b;
     color-scheme:dark;
   }
 }
 :root[data-theme="dark"]{
   --bg:#1b1c1f; --panel:#232428; --text:#e6e6e3; --muted:#9a9ca3; --border:#34363b;
-  --accent:#7aa2f7; --code-bg:#2a2c31; --hover:#2e3035; --mark:#6b5a12; --quote:#45474d;
+  --accent:#7aa2f7; --code-bg:#2a2c31; --hover:#2e3035; --mark:#6b5a12; --quote:#45474d; --jb-ok:#6cc48a; --jb-week:#e6c229; --jb-soon:#ff6b6b;
   color-scheme:dark;
 }
 </style>
@@ -128,16 +129,29 @@ main{flex:1;display:flex;min-height:0;position:relative}
 .md .props span{display:inline-block;min-width:9em;margin-right:8px;color:var(--muted);opacity:.8}
 .md .props a{color:var(--accent)}
 /* JotBird */
-#jbChip{height:24px;font-size:12px;padding:0 9px;border-radius:12px;border:1px solid var(--border);color:#2f8a4c;margin-left:4px}
-#jbChip.soon{color:#b5651d}
-#jbChip.gone{color:var(--muted)}
+#jbChip{height:20px;font-size:11.5px;padding:0 8px;border-radius:10px;border:1px solid var(--border);color:var(--jb-ok);margin-left:6px;gap:5px}
+#jbChip.week{color:var(--jb-week)} #jbChip.soon{color:var(--jb-soon)} #jbChip.gone{color:var(--muted)}
 #jbChip .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+@media (pointer:coarse){ #jbChip{height:24px;font-size:12px} }
+#ctxSub{z-index:21}
 .publist{padding:4px}
 .publist button.pg{display:flex;width:100%;height:auto;min-height:30px;justify-content:space-between;align-items:center;gap:8px;text-align:left;padding:4px 8px;border-radius:5px;white-space:normal;line-height:1.3}
 .publist button.pg.on{color:var(--accent)}
-.publist small{color:#2f8a4c;white-space:nowrap;font-size:11.5px}
-.publist .soon small{color:#b5651d}
-.publist .gone small{color:var(--muted)}
+.publist small{color:var(--jb-ok);white-space:nowrap;font-size:11.5px}
+.publist .week small{color:var(--jb-week)} .publist .soon small{color:var(--jb-soon)} .publist .gone small{color:var(--muted)}
+.publist .renew{width:100%;justify-content:flex-start;color:var(--jb-soon);font-size:12.5px;margin-bottom:2px}
+#jbBody .set.col{flex-direction:column;align-items:stretch}
+#jbBody .opts{display:flex;flex-wrap:wrap;gap:6px}
+#jbBody .opt{border:1px solid var(--border);gap:6px}
+#jbBody .opt.on{border-color:var(--accent);color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+#jbBody .opt small{display:inline;font-size:10.5px;color:var(--muted);border:1px solid var(--border);border-radius:8px;padding:0 5px}
+#jbBody input[type=password]{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--border);border-radius:6px;height:30px;padding:0 8px}
+#jbBody .pageurl{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px}
+.swatches .sw{justify-content:flex-start;gap:8px;border:1px solid var(--border);height:34px;cursor:pointer;display:flex;align-items:center;padding:0 8px;border-radius:6px;font-size:13px}
+.swatches button.sw span{width:16px;height:16px;border-radius:50%;background:var(--c);flex:none}
+.swatches .sw.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.swatches .custom input{width:22px;height:22px;border:0;padding:0;background:none;cursor:pointer}
 .publist .head{font-size:11.5px;color:var(--muted);padding:8px 8px 2px}
 #jbDlg .box{max-width:420px}
 #jbDlg h3{margin:0 0 8px;font-size:16px}
@@ -201,7 +215,8 @@ body.done-strike .md li.done{text-decoration:line-through;color:var(--muted)}
 .cm-lp-data{color:var(--muted);font-style:italic;font-size:.85em;border:1px solid var(--border);border-radius:4px;padding:0 6px}
 
 footer{flex:none;display:flex;gap:16px;padding:4px 12px;font-size:12px;color:var(--muted);border-top:1px solid var(--border);background:var(--panel);white-space:nowrap;overflow:hidden}
-footer .grow{flex:1;overflow:hidden;text-overflow:ellipsis}
+footer .grow{flex:1;display:flex;align-items:center;gap:4px;min-width:0}
+#fname{overflow:hidden;text-overflow:ellipsis;min-width:0}
 #dirtyDot{color:var(--accent)}
 #toast{position:fixed;left:50%;bottom:40px;transform:translateX(-50%) translateY(10px);background:var(--text);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;opacity:0;pointer-events:none;transition:.18s;z-index:60}
 #toast.show{opacity:1;transform:translateX(-50%)}
@@ -308,12 +323,12 @@ body.focus .cm-scroller{font-size:17px!important}
       <button id="bShowOutline" class="tog" aria-pressed="true">Show Outline tab</button>
       <button id="bShowTags" class="tog" aria-pressed="true">Show Tags tab</button>
       <button id="bShowPub" class="tog" aria-pressed="true" hidden>Show Published tab</button>
+      <button id="bAccent">Accent color…</button>
       <button id="bReadable" class="tog" aria-pressed="false" title="On: text stays in a comfortable column. Off: text fills the window.">Readable line length</button>
       <div id="recentBox"></div>
       <div class="sub" id="aboutLine"></div>
     </div>
   </details>
-  <button id="jbChip" hidden title="This note is a web page (JotBird)"><span class="dot"></span><span id="jbChipText"></span></button>
   <div class="sep"></div>
   <div class="fmt">
     <button data-f="bold" title="Bold (Ctrl+B)"><b>B</b></button>
@@ -394,12 +409,13 @@ body.focus .cm-scroller{font-size:17px!important}
 </main>
 
 <footer>
-  <span class="grow"><span id="dirtyDot"></span> <span id="fname"></span></span>
+  <span class="grow"><span id="dirtyDot"></span><span id="fname"></span><button id="jbChip" hidden title="This note is a web page (JotBird)"><span class="dot"></span><span id="jbChipText"></span></button></span>
   <span id="cursor"></span>
   <span id="stats"></span>
 </footer>
 
 <div class="ctx" id="ctx" hidden></div>
+<div class="ctx" id="ctxSub" hidden></div>
 <div class="modal" id="ask" hidden><div class="box">
   <p id="askMsg"></p>
   <input id="askInput" spellcheck="false">
@@ -408,7 +424,7 @@ body.focus .cm-scroller{font-size:17px!important}
 <div class="modal" id="jbDlg" hidden><div class="box">
   <h3 id="jbTitle"></h3>
   <div id="jbBody"></div>
-  <div class="btns"><button class="primary" id="jbClose">Close</button></div>
+  <div class="btns"><button id="jbCancel" hidden>Cancel</button><button class="primary" id="jbClose">Close</button></div>
 </div></div>
 <div class="modal" id="qs" hidden><div class="box">
   <input id="qsInput" placeholder="Find or create a note…" spellcheck="false">
