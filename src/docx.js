@@ -81,7 +81,8 @@ export async function toDocx(html, title){
           `<w:tc><w:tcPr><w:tcW w:w="${cw}" w:type="dxa"/></w:tcPr><w:p>${r === 0 || td.tagName === 'TH' ? runs(td, { b: true }) : runs(td)}</w:p></w:tc>`).join('')}</w:tr>`).join('');
         body.push(`<w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="${cw * cols}" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders>${['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(s => `<w:${s} w:val="single" w:sz="4" w:color="BBBBBB"/>`).join('')}</w:tblBorders></w:tblPr><w:tblGrid>${`<w:gridCol w:w="${cw}"/>`.repeat(cols)}</w:tblGrid>${rows}</w:tbl>`);
         para('');
-      } else if (tag === 'div' || tag === 'details' || tag === 'section' || tag === 'figure') block(n, depth, quote);
+      } else if (tag === 'div' && n.classList.contains('pagebreak')) para('<w:r><w:br w:type="page"/></w:r>');
+      else if (tag === 'div' || tag === 'details' || tag === 'section' || tag === 'figure') block(n, depth, quote);
       else if (n.textContent.trim()) para(runs({ childNodes: [n] }), q);
     }
   }

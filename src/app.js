@@ -6,10 +6,11 @@ import { createEditor } from './editor.js';
 import { undo, redo } from '@codemirror/commands';
 import { toDocx } from './docx.js';
 import { makeZip, readZip } from './zip.js';
+import { toPlain, toEpub, copyRich, noFront } from './export.js';
 import { host } from './host.js';
 import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.6.2';
+const VERSION = '2.7.0';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -454,21 +455,80 @@ async function save(saveAs, quiet){
 }
 const titleOf = t => (t.match(/^#\s+(.+)$/m) || [])[1]?.replace(/[\\/:*?"<>|#^[\]]/g, '').trim().slice(0, 80);
 
-function exportHtml(){
-  const title = (titleOf(text()) || cur.name.replace(/\.\w+$/, '')).trim();
+/* ---------------- Export ---------------- */
+// notes: [{ name, path?, text }]. Several notes become one combined file (each starts on a new page)
+// or a .zip of separate files, the user picks.
+const EXPORTS = [['HTML', 'html'], ['Word (.docx)', 'docx'], ['PDF / Print', 'print'], ['Plain text (.txt)', 'txt'],
+  ['Ebook (.epub)', 'epub'], ['Copy as rich text', 'copy']];
+const MIME = { html: 'text/html', txt: 'text/plain', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', epub: 'application/epub+zip', zip: 'application/zip' };
+const BREAK = '<div class="pagebreak"></div>';
+const baseName = n => n.replace(/\.\w+$/, '');
+const safeName = s => s.replace(/[\\/:*?"<>|]/g, '-').trim() || 'Notes';
+const noteTitle = n => (titleOf(noFront(n.text)) || baseName(n.name)).trim();
+// in a combined file a note without its own # title gets its name as one
+const titled = (n, multi) => { const t = noFront(n.text); return multi && !/^#\s/.test(t.trimStart()) ? `# ${baseName(n.name)}\n\n${t}` : t; };
+const htmlOf = (notes, multi) => notes.map(n => markdown(titled(n, multi))).join(BREAK);
+function pageHtml(title, body){
   const css = $('#tokens').textContent + $('#mdcss').textContent + 'body{background:var(--bg);margin:0;padding:40px 16px}';
-  const body = markdown(text()).replace(/<input type="checkbox" class="task"/g, '<input type="checkbox" class="task" disabled');
-  const html = `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><style>${css}</style></head><body><article class="md">\n${body}\n</article></body></html>`;
-  host.download(cur.name.replace(/\.\w+$/, '') + '.html', html, 'text/html');
+  body = body.replace(/<input type="checkbox" class="task"/g, '<input type="checkbox" class="task" disabled');
+  return `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><style>${css}</style></head><body><article class="md">\n${body}\n</article></body></html>`;
 }
-
-async function exportDocx(){
-  const title = (titleOf(text()) || cur.name.replace(/\.\w+$/, '')).trim();
+async function render1(fmt, notes, title){
+  const multi = notes.length > 1;
+  if (fmt === 'txt') return notes.map(n => toPlain(titled(n, multi))).join('\n────────\n\n');
+  if (fmt === 'html') return pageHtml(title, htmlOf(notes, multi));
+  if (fmt === 'docx') return toDocx(htmlOf(notes, multi), title);
+}
+const saveOut = async (name, data, type) => (await (typeof data === 'string' ? host.download(name, data, MIME[type]) : host.saveBytes(name, data, MIME[type]))) !== false;
+// file names inside a .zip: the notes' paths, less the folder they all share
+function zipNames(notes, ext){
+  const paths = notes.map(n => n.path || n.name);
+  let common = dirname(paths[0]);
+  while (common && !paths.every(p => p.startsWith(common + '/'))) common = dirname(common);
+  return paths.map(p => (common ? p.slice(common.length + 1) : p).replace(/\.\w+$/, '') + ext);
+}
+async function exportNotes(notes, fmt, title){
+  if (!notes.length) return;
+  const multi = notes.length > 1, te = new TextEncoder();
+  title = multi ? title : noteTitle(notes[0]);
+  const file = multi ? safeName(title) : safeName(baseName(notes[0].name));
   try {
-    const bytes = await toDocx(markdown(text().replace(/^---\n[\s\S]*?\n---\n?/, '')), title);
-    if (await host.saveBytes(cur.name.replace(/\.\w+$/, '') + '.docx', bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')) toast('Saved as a Word file');
+    if (fmt === 'print'){ pv.innerHTML = htmlOf(notes, multi); fillPreview(); setTimeout(() => host.print(), 300); return; }
+    if (fmt === 'copy'){
+      const ok = await copyRich(htmlOf(notes, multi).replace(/<input type="checkbox" class="task"( checked)?[^>]*>/g, (m, c) => c ? '☑ ' : '☐ '), notes.map(n => toPlain(titled(n, multi))).join('\n'));
+      toast(ok ? 'Copied with formatting. Paste it into an email or a document' : "Couldn't copy");
+      return;
+    }
+    if (fmt === 'md'){
+      const names = zipNames(notes, '.md');
+      const zip = await makeZip(notes.map((n, i) => ({ name: names[i], data: te.encode(n.text) })));
+      if (await saveOut(file + '.zip', zip, 'zip')) toast(`Saved ${notes.length} notes as a zip`);
+      return;
+    }
+    if (fmt === 'epub'){
+      const bytes = await toEpub(notes.map(n => ({ title: noteTitle(n), html: markdown(noFront(n.text)) })), title);
+      if (await saveOut(file + '.epub', bytes, 'epub')) toast('Saved as an ebook');
+      return;
+    }
+    let apart = false;
+    if (multi){
+      const c = await ask(`Export ${notes.length} notes as ${EXPORTS.find(e => e[1] === fmt)[0]}`, { buttons: [
+        { label: 'Cancel', value: null }, { label: 'Separate files (.zip)', value: 'zip' }, { label: 'One combined file', value: 'one', primary: true }] });
+      if (!c) return;
+      apart = c === 'zip';
+    }
+    if (apart){
+      const names = zipNames(notes, '.' + fmt), files = [];
+      for (const [i, n] of notes.entries()){
+        const d = await render1(fmt, [n], noteTitle(n));
+        files.push({ name: names[i], data: typeof d === 'string' ? te.encode(d) : d });
+      }
+      if (await saveOut(file + '.zip', await makeZip(files), 'zip')) toast(`Saved ${notes.length} files in a zip`);
+    } else if (await saveOut(file + '.' + fmt, await render1(fmt, notes, title), fmt))
+      toast(fmt === 'docx' ? 'Saved as a Word file' : 'Saved ' + file + '.' + fmt);
   } catch (e){ if (e.name !== 'AbortError') toast("Couldn't export: " + (e.message || e)); }
 }
+const exportCurrent = fmt => exportNotes([{ name: cur.name, path: cur.path, text: text() }], fmt);
 
 /* ---------------- Recent files ---------------- */
 let recent = [];
@@ -521,6 +581,7 @@ $('#recentBox').addEventListener('click', async e => {
 
 /* ---------------- Library (a folder of notes: portable notes or an Obsidian vault) ---------------- */
 let lib = null, libs = [], tree = [], expanded = new Set(), selectedFolder = '';
+let picked = new Set(), pickAnchor = '', picking = false;   // multi-select in the file list
 const allFiles = (list = tree, out = []) => { for (const n of list){ if (n.dir) allFiles(n.children || [], out); else out.push(n); } return out; };
 function findFile(target){
   const t = target.trim().toLowerCase(), files = allFiles();
@@ -555,6 +616,8 @@ async function openLibrary(desc, quiet){
 }
 async function refreshTree(){
   if (!lib) return renderLibEmpty();
+  // a big vault takes a moment on phones: say so instead of showing an empty list
+  if (!tree.length){ renderLibEmpty(); $('#tree').innerHTML = '<div class="empty">Reading the library…</div>'; }
   try { tree = await lib.fs.list(); await loadMtimes(); }
   catch (e){ tree = []; toast("Couldn't read the library: " + (e.message || e)); }
   renderTree();
@@ -642,12 +705,40 @@ function renderTree(){
   markTree();
 }
 function markTree(){
-  for (const b of document.querySelectorAll('#tree .row'))
+  for (const p of picked) if (!allFiles().some(f => f.path === p || f.path.startsWith(p + '/')) && !dirExists(p)) picked.delete(p);
+  for (const b of document.querySelectorAll('#tree .row')){
     b.classList.toggle('on', cur.kind === 'lib' && b.dataset.path === cur.path || !!b.dataset.dir && b.dataset.path === selectedFolder && cur.kind !== 'lib');
+    b.classList.toggle('picked', picked.has(b.dataset.path));
+  }
+  if (!picked.size) picking = false;
+  $('#pickBar').hidden = !picked.size;
+  $('#pickCount').textContent = picked.size + ' selected';
 }
+/* Multi-select: Ctrl+click picks notes one by one, Shift+click a run of them (like File Explorer);
+   on phones "Select" in the long-press menu starts it and then taps pick. Middle-click opens in a new tab. */
+const clearPicks = () => { picked.clear(); picking = false; markTree(); };
+const rowPaths = () => [...document.querySelectorAll('#tree .row')].map(r => r.dataset.path);
+// every folder in the library, in the order the file list shows them: [{ path, name, depth }]
+function allDirs(list = tree, depth = 0, out = []){
+  for (const n of sortedList(list)) if (n.dir){ out.push({ path: n.path, name: n.name, depth }); allDirs(n.children || [], depth + 1, out); }
+  return out;
+}
+const dirExists = p => allDirs().some(d => d.path === p);
+// the picked items, less anything inside a picked folder
+const topPicks = () => [...picked].filter(p => ![...picked].some(q => q !== p && p.startsWith(q + '/')));
 $('#tree').addEventListener('click', e => {
   const b = e.target.closest('.row'); if (!b) return;
   const p = b.dataset.path;
+  if (e.shiftKey && pickAnchor){
+    const rows = rowPaths(), [i, j] = [rows.indexOf(pickAnchor), rows.indexOf(p)].sort((a, b) => a - b);
+    if (i >= 0){ picked = new Set(rows.slice(i, j + 1)); markTree(); return; }
+  }
+  if (e.ctrlKey || e.metaKey || picking){
+    picked.has(p) ? picked.delete(p) : picked.add(p);
+    pickAnchor = p; markTree(); return;
+  }
+  if (picked.size) clearPicks();
+  pickAnchor = p;
   if (b.dataset.dir){
     expanded.has(p) ? expanded.delete(p) : expanded.add(p);
     selectedFolder = p;
@@ -655,14 +746,24 @@ $('#tree').addEventListener('click', e => {
     renderTree();
   } else {
     selectedFolder = dirname(p);
-    openLibFile(p, e.ctrlKey || e.metaKey);
+    openLibFile(p);
     // on phones the sidebar closes after a short wait, so a double-tap can still rename
     if (window.innerWidth <= 700){ clearTimeout(sideCloseTimer); sideCloseTimer = setTimeout(() => toggleSide(false), 350); }
   }
 });
+$('#tree').addEventListener('mousedown', e => { if (e.button === 1) e.preventDefault(); });   // no autoscroll on middle-click
+$('#tree').addEventListener('auxclick', e => {
+  const b = e.target.closest('.row');
+  if (b && e.button === 1 && !b.dataset.dir){ e.preventDefault(); openLibFile(b.dataset.path, true); }
+});
+$('#bPickClear').addEventListener('click', clearPicks);
+$('#bPickExport').addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); showCtx(r.left, r.bottom + 4, exportItems(topPicks())); });
+$('#bPickMove').addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); moveMenu(topPicks(), r.left, r.bottom + 4); });
+$('#bPickDel').addEventListener('click', () => trashPaths(topPicks()));
 let sideCloseTimer;
 $('#tree').addEventListener('dblclick', e => {
   const b = e.target.closest('.row'); if (!b) return;
+  if (e.ctrlKey || e.metaKey || e.shiftKey || picking) return;
   clearTimeout(sideCloseTimer);
   renamePath(b.dataset.path, !!b.dataset.dir);
 });
@@ -758,11 +859,27 @@ $('#tree').addEventListener('contextmenu', async e => {
   const b = e.target.closest('.row'); if (!b) return;
   e.preventDefault();
   const p = b.dataset.path, isDir = !!b.dataset.dir, dir = isDir ? p : dirname(p), x = e.clientX, y = e.clientY;
+  // on one of several picked items, the menu works on all of them
+  if (picked.size > 1 && picked.has(p)){
+    const ps = topPicks();
+    showCtx(x, y, [
+      ['Export', null, exportItems(ps)],
+      ['Move to…', () => moveMenu(ps, x, y)],
+      ['Delete (move to .trash)', () => trashPaths(ps)],
+      ['Clear selection', clearPicks],
+    ]);
+    return;
+  }
+  if (picked.size && !picked.has(p)) clearPicks();
   const items = [
+    ...(isDir ? [] : [['Open in new tab', () => openLibFile(p, true)]]),
     ['New note here', async () => { const n = await ask('New note', { input: 'Untitled' }); if (n) createNote(dir, n); }],
     ['New folder here', () => newFolder(dir)],
+    ['Select', () => { picking = true; picked.add(p); pickAnchor = p; markTree(); }],
     ['Rename…', () => renamePath(p, isDir)],
+    ['Move to…', () => moveMenu([p], x, y)],
     ['Delete (move to .trash)', () => trashPath(p, isDir)],
+    ['Export', null, exportItems([p])],
   ];
   // JotBird options: Publish for a note that isn't published yet, the page's options for one that is
   if (jb.on && !isDir && isNote(p)){
@@ -787,21 +904,72 @@ async function renamePath(p, isDir){
   if (!isDir && isNote(old) && !isNote(n)) n += old.match(/\.[^.]+$/)[0];
   const to = joinPath(dirname(p), n);
   if (allFiles().some(f => f.path.toLowerCase() === to.toLowerCase()) && to.toLowerCase() !== p.toLowerCase()){ toast(n + ' already exists'); return; }
+  try { await movePath(p, to); } catch (e){ toast("Couldn't rename: " + (e.message || e)); }
+}
+// rename or move a note or folder: open tabs follow it, and so do [[links]] to it
+async function movePath(p, to){
   const inside = c => c.kind === 'lib' && (c.path === p || c.path.startsWith(p + '/'));
   if (inside(cur)) await flush();
-  try {
-    const relinks = await planRelinks(p, to);
-    await lib.fs.rename(p, to);
-    stash();
-    for (const t of tabs) if (inside(t.cur)){
-      t.cur.path = to + t.cur.path.slice(p.length); t.cur.name = basename(t.cur.path);
-      t.cur.mtime = await lib.fs.mtime(t.cur.path).catch(() => 0);
+  const relinks = await planRelinks(p, to);
+  await lib.fs.rename(p, to);
+  stash();
+  for (const t of tabs) if (inside(t.cur)){
+    t.cur.path = to + t.cur.path.slice(p.length); t.cur.name = basename(t.cur.path);
+    t.cur.mtime = await lib.fs.mtime(t.cur.path).catch(() => 0);
+  }
+  updateTitle(); saveSession();
+  for (const d of [...expanded]) if (d === p || d.startsWith(p + '/')){ expanded.delete(d); expanded.add(to + d.slice(p.length)); }
+  await refreshTree();
+  await applyRelinks(relinks, p, to);
+}
+// Move to…: a menu of the library's folders
+function moveMenu(paths, x, y){
+  const blocked = d => paths.some(p => d === p || d.startsWith(p + '/'));
+  const go = dest => async () => {
+    let n = 0;
+    for (const p of paths){
+      if (dirname(p) === dest) continue;
+      const to = joinPath(dest, basename(p));
+      if (allFiles().some(f => f.path.toLowerCase() === to.toLowerCase()) || dirExists(to)){ toast(basename(p) + ' is already in that folder'); continue; }
+      try { await movePath(p, to); n++; } catch (e){ toast(`Couldn't move ${basename(p)}: ` + (e.message || e)); break; }
     }
-    updateTitle(); saveSession();
-    if (expanded.delete(p)) expanded.add(to);
-    await refreshTree();
-    await applyRelinks(relinks, p, to);
-  } catch (e){ toast("Couldn't rename: " + (e.message || e)); }
+    if (dest){ for (let d = dest; d; d = dirname(d)) expanded.add(d); store.set('open.' + lib.desc.id, JSON.stringify([...expanded])); }
+    clearPicks(); renderTree();
+    if (n) toast(`Moved ${n === 1 ? basename(paths[0]).replace(/\.md$/i, '') : n + ' items'} to ${dest || 'the top of the library'}`);
+  };
+  showCtx(x, y, [
+    ['⌂ Top of the library', go('')],
+    ...allDirs().filter(d => !blocked(d.path) && !d.name.startsWith('.')).map(d => [' '.repeat(d.depth) + '📁 ' + d.name, go(d.path)]),
+  ]);
+}
+// Export ▸ for notes and folders (a folder exports all the notes in it)
+function exportItems(paths){
+  const run = fmt => async () => {
+    const set = new Set(paths), notes = [];
+    stash();
+    const walk = (list, inPick) => {
+      for (const n of sortedList(list)){
+        const hit = inPick || set.has(n.path);
+        if (n.dir){ if (!n.name.startsWith('.')) walk(n.children || [], hit); }
+        else if (hit && /\.(md|markdown|mdown|mkd|txt)$/i.test(n.name)) notes.push(n);
+      }
+    };
+    walk(tree, false);
+    if (!notes.length){ toast('No notes in there'); return; }
+    const full = await Promise.all(notes.map(async n => ({ name: n.name, path: n.path,
+      text: cur.kind === 'lib' && cur.path === n.path ? text() : tabs.find(t => t.cur.kind === 'lib' && t.cur.path === n.path)?.state.doc.toString() ?? await lib.fs.read(n.path) })));
+    const title = paths.length === 1 ? basename(paths[0]).replace(/\.md$/i, '') : `${lib.desc.name} (${notes.length} notes)`;
+    exportNotes(full, fmt, title);
+  };
+  const several = paths.length > 1 || paths.some(dirExists);
+  return [...EXPORTS.map(([label, fmt]) => [label, run(fmt)]), ...(several ? [['Markdown files (.zip)', run('md')]] : [])];
+}
+async function trashPaths(paths){
+  if (paths.length === 1) return trashPath(paths[0], dirExists(paths[0]));
+  const names = paths.slice(0, 6).map(p => '• ' + basename(p).replace(/\.md$/i, '') + (dirExists(p) ? ' (folder)' : '')).join('\n') + (paths.length > 6 ? `\n…and ${paths.length - 6} more` : '');
+  if (!(await confirmBox(`Move these ${paths.length} items to the library's .trash folder?\n\n${names}`, 'Move to trash'))) return;
+  for (const p of paths) if (!(await trashPath(p, dirExists(p), true))) break;
+  clearPicks();
 }
 // like Obsidian: after a rename, [[links]] in other notes follow the note to its new name
 async function planRelinks(from, to){
@@ -904,8 +1072,8 @@ async function restoreBackup(){
   } catch (e){ toast("Couldn't restore: " + (e.message || e)); }
 }
 const SHOWN_FILE = /\.(md|markdown|mdown|mkd|txt|png|jpe?g|gif|webp|svg|bmp|avif)$/i;
-async function trashPath(p, isDir){
-  if (!(await confirmBox(`Move ${basename(p)}${isDir ? ' and everything in it' : ''} to the library's .trash folder?`, 'Move to trash'))) return;
+async function trashPath(p, isDir, sure){
+  if (!sure && !(await confirmBox(`Move ${basename(p)}${isDir ? ' and everything in it' : ''} to the library's .trash folder?`, 'Move to trash'))) return;
   try {
     stash();
     const gone = t => t.cur.kind === 'lib' && (t.cur.path === p || t.cur.path.startsWith(p + '/'));
@@ -914,6 +1082,7 @@ async function trashPath(p, isDir){
     await closeTabs(k => !gone(tabs[k]));
     await lib.fs.trash(p);
     await refreshTree(); toast('Moved to .trash');
+    return true;
   } catch (e){ toast("Couldn't delete: " + (e.message || e)); }
 }
 $('#bNewNote').addEventListener('click', newNote);
@@ -1562,9 +1731,8 @@ $('#bSwitcher').addEventListener('click', closeMenu(openSwitcher));
 $('#bSearch').addEventListener('click', closeMenu(() => openSearch()));
 $('#bBackup').addEventListener('click', closeMenu(backupLibrary));
 $('#bRestore').addEventListener('click', closeMenu(restoreBackup));
-$('#bExport').addEventListener('click', closeMenu(exportHtml));
-$('#bDocx').addEventListener('click', closeMenu(exportDocx));
-$('#bPrint').addEventListener('click', closeMenu(() => { pv.innerHTML = markdown(text()); fillPreview(); setTimeout(() => host.print(), 300); }));
+for (const [id, fmt] of [['#bExport', 'html'], ['#bDocx', 'docx'], ['#bPrint', 'print'], ['#bTxt', 'txt'], ['#bEpub', 'epub'], ['#bCopyRich', 'copy']])
+  $(id).addEventListener('click', closeMenu(() => exportCurrent(fmt)));
 $('#bAutosave').setAttribute('aria-pressed', String(autosave));
 $('#bAutosave').addEventListener('click', () => {
   autosave = !autosave; store.set('autosave', autosave ? '1' : '0');
@@ -1626,6 +1794,7 @@ document.addEventListener('keydown', e => {
     if (!$('#jbDlg').hidden){ $('#jbDlg').hidden = true; return; }
     if (document.body.classList.contains('focus')){ setFocus(false); return; }
     if (searchPanelOpen(view.state)){ closeFind(); return; }
+    if (picked.size){ clearPicks(); return; }
     if (window.innerWidth <= 700 && !$('#side').hidden){ toggleSide(false); return; }
     return;
   }

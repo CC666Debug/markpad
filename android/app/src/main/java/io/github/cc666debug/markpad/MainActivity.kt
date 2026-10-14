@@ -347,60 +347,122 @@ class MainActivity : AppCompatActivity() {
         override fun open(path: String): InputStream = f(path).inputStream()
     }
 
-    // any folder the user picked (an Obsidian vault, Documents/Notes, …) through Android's folder picker
-    inner class SafLib(tree: Uri) : Lib {
-        private val root = DocumentFile.fromTreeUri(this@MainActivity, tree) ?: throw Exception("can't open that folder")
-        private fun find(path: String): DocumentFile =
-            parts(path).fold(root) { d, n -> d.findFile(n) ?: throw java.io.FileNotFoundException(path) }
-        private fun parentOf(path: String, create: Boolean): Pair<DocumentFile, String> {
-            val ps = parts(path)
-            var d = root
-            for (n in ps.dropLast(1)) d = d.findFile(n) ?: if (create) d.createDirectory(n)!! else throw java.io.FileNotFoundException(path)
-            return d to ps.last()
-        }
-        private fun walk(d: DocumentFile, pre: String): JSONArray {
-            val out = JSONArray()
-            val kids = d.listFiles().filter { !(it.name ?: ".").startsWith(".") }
-                .sortedWith(compareBy<DocumentFile>({ !it.isDirectory }, { (it.name ?: "").lowercase() }))
-            for (k in kids) {
-                val n = k.name ?: continue
-                if (k.isDirectory) out.put(JSONObject().put("name", n).put("path", pre + n).put("dir", true).put("children", walk(k, "$pre$n/")))
-                else if (shown.containsMatchIn(n)) out.put(JSONObject().put("name", n).put("path", pre + n).put("dir", false))
+    // any folder the user picked (an Obsidian vault, Documents/Notes, …) through Android's folder picker.
+    // Talks to DocumentsContract directly: one query per folder (DocumentFile asks again for every file's
+    // name and type, which took minutes on a vault with thousands of files). Paths → document ids are
+    // remembered per library, so opening and saving a note doesn't list its folder again.
+    private val docIds = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.ConcurrentHashMap<String, String>>()
+
+    class Kid(val id: String, val name: String, val dir: Boolean)
+    inner class SafLib(private val tree: Uri) : Lib {
+        private val cr = contentResolver
+        private val rootId = DocumentsContract.getTreeDocumentId(tree)
+        private val ids = docIds.getOrPut(tree.toString()) { java.util.concurrent.ConcurrentHashMap() }
+        private fun uri(id: String) = DocumentsContract.buildDocumentUriUsingTree(tree, id)
+        private val DIR = DocumentsContract.Document.MIME_TYPE_DIR
+
+        private fun kids(id: String): List<Kid> {
+            val out = ArrayList<Kid>()
+            cr.query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, id), arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, null)?.use { c ->
+                while (c.moveToNext()) {
+                    val name = c.getString(1) ?: continue
+                    out.add(Kid(c.getString(0), name, c.getString(2) == DIR))
+                }
             }
             return out
         }
-        override fun list() = walk(root, "")
-        override fun read(path: String) = readUri(find(path).uri)
+        // forget remembered ids under a path (after a rename, move or delete)
+        private fun forget(path: String) { ids.keys.removeAll { it == path || it.startsWith("$path/") } }
+
+        // document id of a path, or null; looks up only the folders it hasn't seen yet
+        private fun idOf(path: String): String? {
+            val ps = parts(path)
+            if (ps.isEmpty()) return rootId
+            ids[ps.joinToString("/")]?.let { return it }
+            var id = rootId; var pre = ""
+            for (n in ps) {
+                val p = pre + n
+                id = ids[p] ?: run {
+                    for (k in kids(id)) ids[pre + k.name] = k.id
+                    ids[p]
+                } ?: return null
+                pre = "$p/"
+            }
+            return id
+        }
+        private fun need(path: String) = idOf(path) ?: throw java.io.FileNotFoundException(path)
+        // the folder a path lives in (made when create is on) and the path's last part
+        private fun parentOf(path: String, create: Boolean): Pair<String, String> {
+            val ps = parts(path)
+            var id = rootId; var pre = ""
+            for (n in ps.dropLast(1)) {
+                val p = pre + n
+                id = idOf(p) ?: if (create) mkdir(id, p, n) else throw java.io.FileNotFoundException(path)
+                pre = "$p/"
+            }
+            return id to ps.last()
+        }
+        private fun mkdir(parent: String, path: String, name: String): String {
+            val u = DocumentsContract.createDocument(cr, uri(parent), DIR, name) ?: throw Exception("couldn't create $name")
+            return DocumentsContract.getDocumentId(u).also { ids[path] = it }
+        }
+
+        private fun walk(id: String, pre: String): JSONArray {
+            val out = JSONArray()
+            val ks = kids(id).filter { !it.name.startsWith(".") }
+                .sortedWith(compareBy<Kid>({ !it.dir }, { it.name.lowercase() }))
+            for (k in ks) {
+                val p = pre + k.name
+                ids[p] = k.id
+                if (k.dir) out.put(JSONObject().put("name", k.name).put("path", p).put("dir", true).put("children", walk(k.id, "$p/")))
+                else if (shown.containsMatchIn(k.name)) out.put(JSONObject().put("name", k.name).put("path", p).put("dir", false))
+            }
+            return out
+        }
+        override fun list(): JSONArray { ids.clear(); return walk(rootId, "") }
+        override fun read(path: String) = readUri(uri(need(path)))
         override fun write(path: String, bytes: ByteArray) {
             val (d, n) = parentOf(path, true)
-            // octet-stream so Android keeps the name exactly as given (no extra ".txt")
-            val f = d.findFile(n) ?: d.createFile("application/octet-stream", n) ?: throw Exception("couldn't create $n")
-            contentResolver.openOutputStream(f.uri, "wt")!!.use { it.write(bytes) }
+            val key = parts(path).joinToString("/")
+            val u = idOf(path)?.let { uri(it) }
+                // octet-stream so Android keeps the name exactly as given (no extra ".txt")
+                ?: DocumentsContract.createDocument(cr, uri(d), "application/octet-stream", n)?.also { ids[key] = DocumentsContract.getDocumentId(it) }
+                ?: throw Exception("couldn't create $n")
+            cr.openOutputStream(u, "wt")!!.use { it.write(bytes) }
         }
         override fun dir(path: String, create: Boolean) {
-            var d = root
-            for (n in parts(path)) d = d.findFile(n) ?: d.createDirectory(n) ?: throw Exception("couldn't create $n")
+            var id = rootId; var pre = ""
+            for (n in parts(path)) { val p = pre + n; id = idOf(p) ?: mkdir(id, p, n); pre = "$p/" }
         }
         override fun rename(from: String, to: String) {
-            val src = find(from)
+            val src = need(from)
+            val (fromDir, fromName) = parentOf(from, false)
             val (toDir, toName) = parentOf(to, true)
-            val fromDir = parentOf(from, false).first
-            if (fromDir.uri == toDir.uri) { if (!src.renameTo(toName)) throw Exception("couldn't rename"); return }
-            DocumentsContract.moveDocument(contentResolver, src.uri, fromDir.uri, toDir.uri) ?: throw Exception("couldn't move")
+            var u = uri(src)
+            if (fromDir != toDir) u = DocumentsContract.moveDocument(cr, u, uri(fromDir), uri(toDir)) ?: throw Exception("couldn't move")
+            if (fromName != toName) DocumentsContract.renameDocument(cr, u, toName) ?: throw Exception("couldn't rename")
+            forget(parts(from).joinToString("/")); forget(parts(to).joinToString("/"))
         }
         override fun trash(path: String) {
-            val src = find(path)
-            val from = parentOf(path, false).first
-            val bin = root.findFile(".trash") ?: root.createDirectory(".trash") ?: throw Exception("no .trash")
-            val moved = try { DocumentsContract.moveDocument(contentResolver, src.uri, from.uri, bin.uri) } catch (_: Exception) { null }
+            val key = parts(path).joinToString("/")
+            val src = need(path)
+            val (from, name) = parentOf(path, false)
+            val bin = idOf(".trash") ?: mkdir(rootId, ".trash", ".trash")
+            val moved = try { DocumentsContract.moveDocument(cr, uri(src), uri(from), uri(bin)) } catch (_: Exception) { null }
+            forget(key)
             if (moved != null) return
-            if (src.isDirectory) throw Exception("this folder can't be moved to .trash here")
+            if (cr.getType(uri(src)) == DIR) throw Exception("this folder can't be moved to .trash here")
             // the provider can't move: copy, then delete the original
-            val copy = bin.createFile("application/octet-stream", "${System.currentTimeMillis()} ${src.name}") ?: throw Exception("couldn't copy")
-            contentResolver.openInputStream(src.uri)!!.use { i -> contentResolver.openOutputStream(copy.uri, "wt")!!.use { o -> i.copyTo(o) } }
-            if (!src.delete()) throw Exception("couldn't delete")
+            val copy = DocumentsContract.createDocument(cr, uri(bin), "application/octet-stream", "${System.currentTimeMillis()} $name") ?: throw Exception("couldn't copy")
+            cr.openInputStream(uri(src))!!.use { i -> cr.openOutputStream(copy, "wt")!!.use { o -> i.copyTo(o) } }
+            if (!DocumentsContract.deleteDocument(cr, uri(src))) throw Exception("couldn't delete")
         }
-        override fun mtime(path: String) = find(path).lastModified()
-        override fun open(path: String): InputStream = contentResolver.openInputStream(find(path).uri)!!
+        override fun mtime(path: String): Long =
+            cr.query(uri(need(path)), arrayOf(DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else 0L
+            } ?: 0L
+        override fun open(path: String): InputStream = cr.openInputStream(uri(need(path)))!!
     }
 }
