@@ -10,6 +10,7 @@
 //   readBin(p) → Uint8Array
 //
 // Backups: shareFile(name, bytes) hands a file to the share menu / a Save dialog; openZip() → { name, bytes }
+// saveBytes(name, bytes, mime) saves any other made file (Word export) through a Save dialog
 //
 // JotBird: http({ url, method, headers, body | bodyB64 }) → { status, body, retryAfter }. Only the apps have it:
 // JotBird blocks requests from web pages, so the browser edition has no publishing.
@@ -110,6 +111,7 @@ function browserHost(){
     },
     sameRef: (a, b) => a && b && a.isSameEntry ? a.isSameEntry(b) : false,
     download: async (name, content, type) => download(name, content, type),
+    saveBytes: async (name, bytes, mime) => { download(name, bytes, mime); return true; },
     print: () => window.print(),
     startupFile: async () => null,
     async pickLibrary(){
@@ -187,6 +189,12 @@ function desktopHost(){
       const ext = n.split('.').pop();
       const p = await dialog.save({ defaultPath: n, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
       if (p) await invoke('write_text', { root: '', path: p, text: content });
+      return !!p;
+    },
+    async saveBytes(n, bytes){
+      const ext = n.split('.').pop();
+      const p = await dialog.save({ defaultPath: n, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
+      if (p) await invoke('write_b64', { root: '', path: p, data: b64(bytes) });
       return !!p;
     },
     print: () => window.print(),
@@ -274,6 +282,7 @@ function androidHost(){
     async saveAs(name, text){ const r = await call('saveAs', { name, text, mime: 'text/markdown' }); return r && { name: r.name, ref: r.uri }; },
     sameRef: async (a, b) => a === b,
     download: async (name, content, type) => !!(await call('saveAs', { name, text: content, mime: type })),
+    saveBytes: async (name, bytes, mime) => !!(await call('saveAs', { name, text: '', data: b64(bytes), mime })),
     print: () => call('print'),
     async startupFile(){ const r = await call('startupFile'); return r && { name: r.name, ref: r.uri, text: r.text }; },
     async pickLibrary(){ const r = await call('pickFolder'); return r && { id: 'u:' + r.uri, name: r.name, uri: r.uri }; },

@@ -54,6 +54,25 @@ details.menu summary:hover{background:var(--hover)}
 .menu-list{margin-top:4px}
 .menu-list button,.ctx button{justify-content:flex-start;width:100%}
 .menu-list .sub{font-size:11.5px;color:var(--muted);padding:6px 8px 2px;border-top:1px solid var(--border);margin-top:4px}
+.menu-list .panel{position:fixed;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,.14);z-index:21;min-width:220px;max-width:min(320px,94vw);display:flex;flex-direction:column;max-height:calc(100vh - 16px);overflow-y:auto}
+.menu-list .panel[hidden]{display:none}
+.menu-list .has-sub.open{background:var(--hover)}
+.menu-list .recentmax{margin:2px 8px 4px;align-self:flex-start}
+.menu-list .recentmax button{width:auto;min-width:34px;justify-content:center}
+/* the top bar and file tabs slide sideways when the window is narrow: soft edges show there's more */
+.hfade{position:sticky;flex:none;width:28px;align-self:stretch;z-index:2;pointer-events:none;opacity:0;transition:opacity .15s}
+.hfade.l{left:0;margin-right:-28px;background:linear-gradient(to right,var(--panel),transparent)}
+.hfade.r{right:0;margin-left:-28px;background:linear-gradient(to left,var(--panel),transparent)}
+.more-l>.hfade.l,.more-r>.hfade.r{opacity:1}
+/* Keep-style folds */
+.cm-lp-group{color:var(--muted);font-size:13px;padding:6px 0 2px;cursor:pointer;user-select:none;border-top:1px solid var(--border);margin-top:4px}
+.cm-lp-group:hover{color:var(--text)}
+.md details.done-group{margin:.4em 0 0;border-top:1px solid var(--border);padding-top:4px}
+.md details.done-group>summary{color:var(--muted);font-size:.85em;cursor:pointer;list-style:none;margin-left:-1.4em}
+.md details.done-group>summary::before{content:"▸ "}
+.md details.done-group[open]>summary::before{content:"▾ "}
+.md details.done-group>summary::-webkit-details-marker{display:none}
+.md li.done-group-li{list-style:none}
 .menu-list .recent{max-width:280px;overflow:hidden;text-overflow:ellipsis;display:block;text-align:left;line-height:30px}
 .menu-list .key{margin-left:auto;color:var(--muted);font-size:12px;padding-left:12px}
 .ctx[hidden],button[hidden]{display:none}
@@ -307,30 +326,50 @@ body.focus .cm-scroller{font-size:17px!important}
       <button id="bSaveAs">Save as…<span class="key">Ctrl+Shift+S</span></button>
       <button id="bSwitcher">Quick open…<span class="key">Ctrl+P</span></button>
       <button id="bSearch">Search in notes / #tags…<span class="key">Ctrl+Shift+P</span></button>
-      <button id="bExport">Export as HTML</button>
-      <button id="bPrint">Print / Save as PDF</button>
+      <button class="has-sub" data-panel="pExport">Export<span class="key">▸</span></button>
       <button id="bJb" hidden title="Share this note as a web page (JotBird)">Publish…</button>
-      <button id="bBackup" title="All notes and pictures of the open library in one zip, optionally with a password">Back up notes…</button>
-      <button id="bRestore" title="Unpacks a backup zip into a new “Restored” folder; nothing is overwritten">Restore from backup…</button>
-      <button id="bAutosave" class="tog" aria-pressed="true">Auto-save library notes</button>
-      <div class="sub">Checklists</div>
-      <button id="bStrike" class="tog" aria-pressed="true">Cross out completed items</button>
-      <button id="bMoveDone" class="tog" aria-pressed="false" title="Like Google Keep: ticked items drop to the end of their list">Move completed items to the bottom</button>
-      <button id="bUncheck">Uncheck all</button>
-      <button id="bDelDone">Delete completed items…</button>
-      <div class="sub">Settings</div>
-      <button id="bNewTabs" class="tog" aria-pressed="false" title="Off: a note replaces the current tab (Ctrl+click or middle-click for a new tab)">Open notes in a new tab</button>
-      <button id="bShowOutline" class="tog" aria-pressed="true">Show Outline tab</button>
-      <button id="bShowTags" class="tog" aria-pressed="true">Show Tags tab</button>
-      <button id="bShowPub" class="tog" aria-pressed="true" hidden>Show Published tab</button>
-      <button id="bAccent">Accent color…</button>
-      <button id="bReadable" class="tog" aria-pressed="false" title="On: text stays in a comfortable column. Off: text fills the window.">Readable line length</button>
-      <div id="recentBox"></div>
+      <button class="has-sub" data-panel="pChecklists">Checklists<span class="key">▸</span></button>
+      <button class="has-sub" data-panel="pSettings">Settings<span class="key">▸</span></button>
+      <button class="has-sub" data-panel="pRecent">Recent<span class="key">▸</span></button>
+      <button class="has-sub" data-panel="pBackup">Backup<span class="key">▸</span></button>
       <div class="sub" id="aboutLine"></div>
+      <div class="panel" id="pExport" hidden>
+        <button id="bExport">Export as HTML</button>
+        <button id="bDocx" title="Opens in Word, Google Docs and LibreOffice">Export as Word (.docx)</button>
+        <button id="bPrint">Print / Save as PDF</button>
+      </div>
+      <div class="panel" id="pChecklists" hidden>
+        <button id="bStrike" class="tog" aria-pressed="true">Cross out completed items</button>
+        <button id="bMoveDone" class="tog" aria-pressed="false" title="Like Google Keep: ticked items drop to the end of their list, under a “checked items” fold">Move completed items to the bottom</button>
+        <button id="bUncheck">Uncheck all</button>
+        <button id="bDelDone">Delete completed items…</button>
+      </div>
+      <div class="panel" id="pSettings" hidden>
+        <button id="bAutosave" class="tog" aria-pressed="true">Auto-save library notes</button>
+        <button id="bNewTabs" class="tog" aria-pressed="false" title="Off: a note replaces the current tab (Ctrl+click or middle-click for a new tab)">Open notes in a new tab</button>
+        <button id="bShowOutline" class="tog" aria-pressed="true">Show Outline tab</button>
+        <button id="bShowTags" class="tog" aria-pressed="true">Show Tags tab</button>
+        <button id="bShowPub" class="tog" aria-pressed="true" hidden>Show Published tab</button>
+        <button id="bReadable" class="tog" aria-pressed="false" title="On: text stays in a comfortable column. Off: text fills the window.">Readable line length</button>
+      </div>
+      <div class="panel" id="pRecent" hidden>
+        <div id="recentBox"></div>
+        <div class="sub">Remember</div>
+        <div class="seg recentmax" id="recentMax" role="group" aria-label="How many recent notes">
+          <button data-n="5">5</button><button data-n="10">10</button><button data-n="20">20</button><button data-n="50">50</button><button data-n="off">Off</button>
+        </div>
+        <button id="bRecentClear">Clear the list</button>
+      </div>
+      <div class="panel" id="pBackup" hidden>
+        <button id="bBackup" title="All notes and pictures of the open library in one zip, optionally with a password">Back up notes…</button>
+        <button id="bRestore" title="Unpacks a backup zip into a new “Restored” folder; nothing is overwritten">Restore from backup…</button>
+      </div>
     </div>
   </details>
   <div class="sep"></div>
   <div class="fmt">
+    <button data-f="undo" title="Undo (Ctrl+Z)">↶</button>
+    <button data-f="redo" title="Redo (Ctrl+Y)">↷</button>
     <button data-f="bold" title="Bold (Ctrl+B)"><b>B</b></button>
     <button data-f="italic" title="Italic (Ctrl+I)"><i style="font-family:Georgia,serif">I</i></button>
     <button data-f="underline" title="Underline (Ctrl+U)"><u>U</u></button>
@@ -400,7 +439,10 @@ body.focus .cm-scroller{font-size:17px!important}
     </div>
     <div class="pane" id="olPane" hidden><div id="olList"></div></div>
     <div class="pane" id="tagPane" hidden><div id="tagList"></div></div>
-    <div class="pane" id="pubPane" hidden><div id="pubList" class="publist"></div></div>
+    <div class="pane" id="pubPane" hidden>
+      <div class="libhead"><span class="name">Published</span><button id="bPubSort" title="Change sort order"><svg viewBox="0 0 24 24"><path d="M7 4v16M3 16l4 4 4-4M14 6h7M14 11h5M14 16h3"/></svg></button></div>
+      <div id="pubList" class="publist"></div>
+    </div>
     <div id="sideGrip" title="Drag to resize (double-click to reset)"></div>
   </aside>
   <div id="editPane"></div>

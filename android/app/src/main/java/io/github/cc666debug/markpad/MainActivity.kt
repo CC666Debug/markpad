@@ -119,7 +119,9 @@ class MainActivity : AppCompatActivity() {
                     addCategory(Intent.CATEGORY_OPENABLE); type = a.getString("mime"); putExtra(Intent.EXTRA_TITLE, a.getString("name"))
                 }) { d ->
                     d.data?.let { u ->
-                        keep(u); writeUri(u, a.getString("text"))
+                        keep(u)
+                        if (a.has("data")) contentResolver.openOutputStream(u, "wt")!!.use { it.write(Base64.decode(a.getString("data"), Base64.DEFAULT)) }
+                        else writeUri(u, a.getString("text"))
                         JSONObject().put("uri", u.toString()).put("name", displayName(u)).toString()
                     }
                 }

@@ -3,11 +3,13 @@ import { SearchQuery, setSearchQuery, getSearchQuery, findNext, findPrevious, re
   openSearchPanel, closeSearchPanel, searchPanelOpen } from '@codemirror/search';
 import { TAG_RE, markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, IMG_EXT } from './md.js';
 import { createEditor } from './editor.js';
+import { undo, redo } from '@codemirror/commands';
+import { toDocx } from './docx.js';
 import { makeZip, readZip } from './zip.js';
 import { host } from './host.js';
 import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.5.0';
+const VERSION = '2.6.0';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -296,6 +298,24 @@ function fillPreview(){
     resolveImage(src).then(u => { if (u) img.src = u; });
   }
   for (const a of pv.querySelectorAll('a.wikilink')) a.classList.toggle('missing', !!lib && !resolveWiki(a.dataset.wiki));
+  if (moveDone) foldDone(pv);
+}
+// Read view: the ticked items at the end of each checklist go under a "N checked items" fold (Keep-style)
+const openFolds = new Set();
+function foldDone(root){
+  for (const ul of root.querySelectorAll('ul.contains-task, ol.contains-task')){
+    const items = [...ul.children];
+    let k = items.length;
+    while (k > 0 && items[k - 1].classList.contains('done')) k--;
+    const done = items.slice(k);
+    if (!done.length) continue;
+    const key = (items[0]?.textContent || '') + '|' + done[0].textContent;
+    const li = document.createElement('li'), d = document.createElement('details'), list = document.createElement(ul.tagName);
+    li.className = 'done-group-li'; d.className = 'done-group'; d.open = !openFolds.has('closed:' + key); list.className = 'contains-task';
+    d.innerHTML = `<summary>${done.length} checked item${done.length > 1 ? 's' : ''}</summary>`;
+    d.addEventListener('toggle', () => { d.open ? openFolds.delete('closed:' + key) : openFolds.add('closed:' + key); });
+    list.append(...done); d.append(list); li.append(d); ul.append(li);
+  }
 }
 function updateCursor(){
   const r = sel(), line = view.state.doc.lineAt(r.head);
@@ -442,6 +462,14 @@ function exportHtml(){
   host.download(cur.name.replace(/\.\w+$/, '') + '.html', html, 'text/html');
 }
 
+async function exportDocx(){
+  const title = (titleOf(text()) || cur.name.replace(/\.\w+$/, '')).trim();
+  try {
+    const bytes = await toDocx(markdown(text().replace(/^---\n[\s\S]*?\n---\n?/, '')), title);
+    if (await host.saveBytes(cur.name.replace(/\.\w+$/, '') + '.docx', bytes, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')) toast('Saved as a Word file');
+  } catch (e){ if (e.name !== 'AbortError') toast("Couldn't export: " + (e.message || e)); }
+}
+
 /* ---------------- Recent files ---------------- */
 let recent = [];
 async function addRecent(entry){
@@ -451,13 +479,25 @@ async function addRecent(entry){
     const same = entry.path ? r.path === entry.path && r.lib === entry.lib : r.ref && await Promise.resolve(host.sameRef(r.ref, entry.ref)).catch(() => false);
     if (!same) keep.push(r);
   }
-  recent = [entry, ...keep].slice(0, 8);
+  recent = recentMax() ? [entry, ...keep].slice(0, recentMax()) : [];
   showRecent(); kvSet('recent', recent);
 }
+// how many recent notes to remember: 5, 10, 20 or 50, or 0 = off (nothing is kept)
+const recentMax = () => { const v = store.get('recent.max') || '10'; return v === 'off' ? 0 : +v; };
 function showRecent(){
-  $('#recentBox').innerHTML = recent.length ? '<div class="sub">Recent</div>' + recent.map((r, k) =>
-    `<button class="recent" data-k="${k}" title="${esc(r.path || r.name)}">${esc(r.name)}${r.libName ? ` <span style="color:var(--muted)">· ${esc(r.libName)}</span>` : ''}</button>`).join('') : '';
+  const max = recentMax();
+  $('#recentBox').innerHTML = !max ? '<div class="empty">Recent notes are off.</div>' : recent.length ? recent.map((r, k) =>
+    `<button class="recent" data-k="${k}" title="${esc(r.path || r.name)}">${esc(r.name)}${r.libName ? ` <span style="color:var(--muted)">· ${esc(r.libName)}</span>` : ''}</button>`).join('') : '<div class="empty">No recent notes yet.</div>';
+  for (const b of $('#recentMax').children) b.setAttribute('aria-pressed', String(b.dataset.n === (store.get('recent.max') || '10')));
+  $('#bRecentClear').hidden = !recent.length;
 }
+$('#recentMax').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  store.set('recent.max', b.dataset.n);
+  recent = recent.slice(0, recentMax()); kvSet('recent', recent); showRecent();
+  toast(recentMax() ? `Remembering the last ${recentMax()} notes` : 'Recent notes are off');
+});
+$('#bRecentClear').addEventListener('click', () => { recent = []; kvSet('recent', recent); showRecent(); toast('Recent list cleared'); });
 $('#recentBox').addEventListener('click', async e => {
   const b = e.target.closest('button'), r = b && recent[+b.dataset.k];
   if (!r) return;
@@ -1208,6 +1248,8 @@ const FORMATS = {
   },
   table: () => insertBlock('| Column 1 | Column 2 | Column 3 |\n| --- | --- | --- |\n|  |  |  |\n|  |  |  |', 2, 10),
   hr:    () => insertBlock('---'),
+  undo:  () => { undo(view); view.focus(); },
+  redo:  () => { redo(view); view.focus(); },
 };
 document.querySelectorAll('.fmt button').forEach(b => b.addEventListener('click', () => {
   if (main.dataset.view === 'preview') setView(lastEditView);
@@ -1424,10 +1466,19 @@ function applyTheme(t){
   host.bars?.(getComputedStyle(document.documentElement).colorScheme.includes('dark'));
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(store.get('theme')));
-$('#bTheme').addEventListener('click', () => {
-  const t = getComputedStyle(document.documentElement).colorScheme.includes('dark') ? 'light' : 'dark';
-  applyTheme(t); store.set('theme', t);
-});
+// tap: light/dark. Hold it (or right-click) for the accent colors.
+{ let hold = 0, held = false;
+  const bt = $('#bTheme');
+  bt.title = 'Light/dark (hold for accent colors)';
+  bt.addEventListener('pointerdown', () => { held = false; clearTimeout(hold); hold = setTimeout(() => { held = true; openAccent(); }, 500); });
+  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) bt.addEventListener(ev, () => clearTimeout(hold));
+  bt.addEventListener('contextmenu', e => { e.preventDefault(); if (!held) openAccent(); held = true; });
+  bt.addEventListener('click', () => {
+    if (held){ held = false; return; }
+    const t = getComputedStyle(document.documentElement).colorScheme.includes('dark') ? 'light' : 'dark';
+    applyTheme(t); store.set('theme', t);
+  });
+}
 const div = $('#divider'), pane = $('#editPane');
 div.addEventListener('pointerdown', e => {
   div.setPointerCapture(e.pointerId); div.classList.add('drag');
@@ -1454,9 +1505,28 @@ $('#focusExit').addEventListener('click', () => setFocus(false));
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && document.body.classList.contains('focus')) setFocus(false); });
 
 const menu = $('#moreMenu');
-menu.querySelector('.menu-list').addEventListener('mouseover', e => { const b = e.target.closest('button'); if (b && b.id !== 'bJb' && hoverable.matches) ctxSub.hidden = true; });
+// The ▾ menu's sections (Export, Checklists, Settings, Recent, Backup) open beside it, on hover with a mouse or on a tap
+const panels = [...menu.querySelectorAll('.panel')];
+function closePanels(){ for (const p of panels) p.hidden = true; for (const b of menu.querySelectorAll('.has-sub')) b.classList.remove('open'); }
+function openPanel(trigger){
+  const p = $('#' + trigger.dataset.panel);
+  ctxSub.hidden = true; closePanels();
+  trigger.classList.add('open'); p.hidden = false;
+  const r = trigger.getBoundingClientRect(), w = p.offsetWidth;
+  p.style.left = (r.right - 4 + w > innerWidth - 4 ? Math.max(4, r.left - w + 4) : r.right - 4) + 'px';
+  p.style.top = Math.max(4, Math.min(r.top - 5, innerHeight - p.offsetHeight - 8)) + 'px';
+}
+menu.querySelector('.menu-list').addEventListener('mouseover', e => {
+  const b = e.target.closest('button'); if (!b || !hoverable.matches || b.closest('.panel')) return;
+  if (b.dataset.panel){ if (!b.classList.contains('open')) openPanel(b); }
+  else { closePanels(); if (b.id !== 'bJb') ctxSub.hidden = true; }
+});
+for (const b of menu.querySelectorAll('.has-sub')) b.addEventListener('click', e => {
+  e.preventDefault();
+  if (b.classList.contains('open') && !hoverable.matches) closePanels(); else openPanel(b);
+});
 menu.addEventListener('toggle', () => {
-  if (!menu.open){ ctxSub.hidden = true; return; }
+  if (!menu.open){ ctxSub.hidden = true; closePanels(); return; }
   const r = menu.querySelector('summary').getBoundingClientRect(), list = menu.querySelector('.menu-list');
   list.style.top = r.bottom + 'px';
   list.style.left = Math.min(r.left, window.innerWidth - 300) + 'px';
@@ -1472,6 +1542,7 @@ $('#bSearch').addEventListener('click', closeMenu(() => openSearch()));
 $('#bBackup').addEventListener('click', closeMenu(backupLibrary));
 $('#bRestore').addEventListener('click', closeMenu(restoreBackup));
 $('#bExport').addEventListener('click', closeMenu(exportHtml));
+$('#bDocx').addEventListener('click', closeMenu(exportDocx));
 $('#bPrint').addEventListener('click', closeMenu(() => { pv.innerHTML = markdown(text()); fillPreview(); setTimeout(() => host.print(), 300); }));
 $('#bAutosave').setAttribute('aria-pressed', String(autosave));
 $('#bAutosave').addEventListener('click', () => {
@@ -1492,6 +1563,7 @@ $('#bStrike').addEventListener('click', () => setCrossOut(!document.body.classLi
 $('#bMoveDone').setAttribute('aria-pressed', String(moveDone));
 $('#bMoveDone').addEventListener('click', () => {
   moveDone = !moveDone; store.set('movedone', moveDone ? '1' : '');
+  cm.regroup(); render();
   $('#bMoveDone').setAttribute('aria-pressed', String(moveDone));
   toast(moveDone ? 'Ticked items move to the bottom of their list' : 'Ticked items stay where they are');
 });
@@ -1527,6 +1599,7 @@ document.addEventListener('keydown', e => {
   if (!$('#ask').hidden || !$('#qs').hidden) return;
   if (e.key === 'Escape'){
     if (!ctxSub.hidden){ ctxSub.hidden = true; return; }
+    if (panels.some(p => !p.hidden)){ closePanels(); return; }
     if (!ctx.hidden){ ctx.hidden = true; return; }
     if (menu.open){ menu.open = false; return; }
     if (!$('#jbDlg').hidden){ $('#jbDlg').hidden = true; return; }
@@ -1655,10 +1728,10 @@ function jbItems(){
 }
 $('#bJb').addEventListener('click', e => {
   if (!jb.on){ menu.open = false; jbSetup(); return; }
-  e.stopPropagation(); showSub(e.currentTarget, jbItems());
+  e.stopPropagation(); closePanels(); showSub(e.currentTarget, jbItems());
 });
 // on a computer it opens on hover, like any menu
-$('#bJb').addEventListener('mouseenter', e => { if (jb.on && hoverable.matches) showSub(e.currentTarget, jbItems()); });
+$('#bJb').addEventListener('mouseenter', e => { if (jb.on && hoverable.matches){ closePanels(); showSub(e.currentTarget, jbItems()); } });
 $('#jbChip').addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); e.stopPropagation(); showCtx(r.left, r.top - 4, jbItems(), true); });
 
 async function jbCopy(link){
@@ -1727,7 +1800,7 @@ async function jbSend(t, name, notePath){
   const old = pageOf(t), title = pageTitle(t, name), doc = old ? jbDocs()[old.slug] || {} : {};
   const { md, skipped } = await jbPictures(pageText(t, title), notePath);
   const r = await publish({ key: jb.key, fp: jb.fp, markdown: md, title, slug: old?.slug, documentId: doc.documentId, editToken: doc.editToken });
-  jbSaveDoc(r.slug, { documentId: r.documentId, ...(r.editToken ? { editToken: r.editToken } : {}) });
+  jbSaveDoc(r.slug, { documentId: r.documentId, publishedAt: new Date().toISOString(), ...(r.editToken ? { editToken: r.editToken } : {}) });
   return { page: { link: r.url, expires: r.ttlDays ? (r.expiresAt || '').slice(0, 10) : 'never' }, skipped };
 }
 
@@ -1806,7 +1879,11 @@ async function jbListHtml(reread){
     if (p) notes.push({ f, p, d: jbDays(p) });
   }
   const order = x => x.d == null ? 1e9 : x.d;
-  notes.sort((a, b) => order(a) - order(b));
+  const by = { expiry: (a, b) => order(a) - order(b), 'expiry-desc': (a, b) => order(b) - order(a),
+    name: (a, b) => byName(a.f, b.f), 'name-desc': (a, b) => byName(b.f, a.f),
+    pub: (a, b) => (b.when || '').localeCompare(a.when || ''), 'pub-asc': (a, b) => (a.when || '~').localeCompare(b.when || '~') };
+  for (const n of notes) n.when = (jb.pages?.find(x => x.slug === n.p.slug)?.updatedAt) || jbDocs()[n.p.slug]?.publishedAt || '';
+  notes.sort(by[store.get('pubsort')] || by.expiry);
   const soon = notes.filter(n => n.d != null && n.d <= 7).length;
   let html = (soon ? `<button class="renew" data-a="renew">↻ Renew ${soon} expiring page${soon > 1 ? 's' : ''}</button>` : '') +
     (notes.map(({ f, p, d }) => `<button class="pg ${dayClass(d)}${cur.kind === 'lib' && cur.path === f.path ? ' on' : ''}" data-path="${esc(f.path)}" data-link="${esc(p.link)}">${esc(f.name.replace(/\.md$/i, ''))}<small>${leftText(d)}</small></button>`).join('')
@@ -1933,6 +2010,12 @@ $('#jbBody').addEventListener('click', async e => {
     $('#jbDlg').hidden = true; jbRefresh(); toast('JotBird is off');
   }
 });
+const PUB_SORTS = [['expiry', 'Expiring soonest first'], ['expiry-desc', 'Expiring latest first'], ['pub', 'Published newest first'], ['pub-asc', 'Published oldest first'], ['name', 'Name A → Z'], ['name-desc', 'Name Z → A']];
+$('#bPubSort').addEventListener('click', e => {
+  const r = e.currentTarget.getBoundingClientRect(), now = store.get('pubsort') || 'expiry';
+  e.stopPropagation();
+  showCtx(r.left, r.bottom + 4, PUB_SORTS.map(([k, n]) => [(k === now ? '✓ ' : '    ') + n, () => { store.set('pubsort', k); jbRefreshList(); }]));
+});
 $('#bShowPub').addEventListener('click', () => { store.set('hide.published', store.get('hide.published') ? '' : '1'); jbRefresh(); });
 
 /* ---------------- Accent color (per device) ---------------- */
@@ -1942,15 +2025,32 @@ function setAccent(c){
   store.set('accent', c || '');
 }
 setAccent(store.get('accent') || '');
-$('#bAccent').addEventListener('click', () => {
+function openAccent(){
   menu.open = false;
   const now = store.get('accent') || '';
   jbDialog('Accent color', `<div class="swatches">${ACCENTS.map(([n, c]) =>
     `<button class="sw${c === now ? ' on' : ''}" data-c="${c}" title="${n}" style="--c:${c || '#3b6fd8'}"><span></span>${n}</button>`).join('')}
     <label class="sw custom"><input type="color" id="accentPick" value="${now || '#3b6fd8'}"><span>Custom…</span></label></div>`);
   $('#accentPick').addEventListener('input', e => setAccent(e.target.value));
-});
+}
 $('#jbBody').addEventListener('click', e => { const s = e.target.closest('button.sw'); if (s){ setAccent(s.dataset.c); $('#jbBody').querySelectorAll('button.sw').forEach(b => b.classList.toggle('on', b === s)); } });
+
+/* ---------------- Narrow windows: the top bar and file tabs slide sideways ---------------- */
+for (const el of [document.querySelector('header'), $('#tabList')]){
+  const edges = () => {
+    // the file tabs are redrawn often: put the soft edges back when they go
+    if (!el.querySelector(':scope > .hfade.l')) el.prepend(Object.assign(document.createElement('span'), { className: 'hfade l' }));
+    if (el.lastElementChild?.className !== 'hfade r'){ el.querySelector(':scope > .hfade.r')?.remove(); el.append(Object.assign(document.createElement('span'), { className: 'hfade r' })); }
+    el.classList.toggle('more-l', el.scrollLeft > 2); el.classList.toggle('more-r', el.scrollLeft + el.clientWidth < el.scrollWidth - 2); };
+  el.addEventListener('wheel', e => {
+    if (el.scrollWidth <= el.clientWidth + 1 || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+    el.scrollLeft += e.deltaY; e.preventDefault();
+  }, { passive: false });
+  el.addEventListener('scroll', edges, { passive: true });
+  new ResizeObserver(edges).observe(el);
+  new MutationObserver(edges).observe(el, { childList: true });
+  edges();
+}
 
 /* ---------------- Boot ---------------- */
 cm = createEditor(pane, {
@@ -1963,6 +2063,7 @@ cm = createEditor(pane, {
   openLink,
   openWiki,
   openTag: tag => openSearch('#' + tag),
+  keepGroups: () => moveDone,
   onUpdate(u){
     if (u.docChanged && !loading){ scrollSrc = 'ed'; if (!dirty) setDirty(true); else { saveSession(); if (autosave && cur.kind === 'lib'){ clearTimeout(saveTimer); saveTimer = setTimeout(() => save(false, true), 1200); } } scheduleRender(); }
     if (u.selectionSet || u.docChanged) updateCursor();
@@ -2040,6 +2141,7 @@ window.__mpBack = () => {
   if (!$('#qs').hidden){ $('#qs').hidden = true; return true; }
   if (!$('#jbDlg').hidden){ $('#jbDlg').hidden = true; return true; }
   if (!ctxSub.hidden){ ctxSub.hidden = true; return true; }
+  if (panels.some(p => !p.hidden)){ closePanels(); return true; }
   if (!ctx.hidden){ ctx.hidden = true; return true; }
   if (menu.open){ menu.open = false; return true; }
   if (document.body.classList.contains('focus')){ setFocus(false); return true; }

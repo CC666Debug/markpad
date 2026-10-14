@@ -1,6 +1,6 @@
 // The editor: CodeMirror 6 with Markdown, plus a Live Preview mode like Obsidian's, where the
 // Markdown symbols hide on every line except the one(s) the cursor is on.
-import { EditorState, Compartment, StateField } from '@codemirror/state';
+import { EditorState, Compartment, StateField, StateEffect } from '@codemirror/state';
 import { EditorView, keymap, drawSelection, dropCursor, Decoration, ViewPlugin, WidgetType } from '@codemirror/view';
 import { history, historyKeymap, defaultKeymap, indentMore, indentLess } from '@codemirror/commands';
 import { markdownLanguage, markdownKeymap } from '@codemirror/lang-markdown';
@@ -145,6 +145,71 @@ const liveTables = StateField.define({
   create: tableDecos,
   update: (v, tr) => tr.docChanged || tr.selection || syntaxTree(tr.startState) !== syntaxTree(tr.state) ? tableDecos(tr.state) : v,
   provide: f => EditorView.decorations.from(f),
+});
+
+/* ---------------- Keep-style "N checked items" ---------------- */
+// With "Move completed items to the bottom" on, the ticked items at the end of a checklist sit under a
+// "✓ N checked items" line that folds them away, like Google Keep. Only the look changes: the note stays plain Markdown.
+// Lines become block widgets and hidden ranges, which CodeMirror only takes from a state field.
+const toggleGroup = StateEffect.define(), regroup = StateEffect.define();
+const GTASK = /^(\s*)(?:[-*+]|\d{1,9}[.)])[ \t]+\[([ xX])\]/;
+class GroupWidget extends WidgetType {
+  constructor(n, open, key){ super(); this.n = n; this.open = open; this.key = key; }
+  eq(o){ return o.n === this.n && o.open === this.open && o.key === this.key; }
+  toDOM(view){
+    const d = document.createElement('div');
+    d.className = 'cm-lp-group' + (this.open ? ' open' : '');
+    d.textContent = `${this.open ? '▾' : '▸'} ${this.n} checked item${this.n > 1 ? 's' : ''}`;
+    d.addEventListener('mousedown', e => { e.preventDefault(); view.dispatch({ effects: toggleGroup.of(this.key) }); });
+    return d;
+  }
+  ignoreEvent(){ return true; }
+}
+function groupDecos(state, closed, on){
+  if (!on()) return Decoration.none;
+  const doc = state.doc, lines = doc.toString().split('\n'), decos = [];
+  const indent = l => l.match(/^\s*/)[0].length;
+  let fence = false;
+  for (let i = 0; i < lines.length; i++){
+    if (/^\s*(```|~~~)/.test(lines[i])) fence = !fence;
+    const m = !fence && lines[i].match(GTASK);
+    if (!m) continue;
+    // one checklist: items at this indent, plus anything indented under them
+    const ind = indent(lines[i]), items = [];
+    let j = i;
+    while (j < lines.length){
+      const t = lines[j].match(GTASK);
+      if (!t || indent(lines[j]) !== ind) break;
+      let e = j + 1;
+      while (e < lines.length && lines[e].trim() && indent(lines[e]) > ind) e++;
+      items.push({ start: j, end: e, done: t[2] !== ' ' });
+      j = e;
+    }
+    let k = items.length;
+    while (k > 0 && items[k - 1].done) k--;
+    const done = items.length - k;
+    if (done){
+      const first = items[k].start, last = items[items.length - 1].end - 1;
+      const key = (k ? lines[items[0].start] : '') + '|' + lines[first];
+      const open = !closed.has(key);
+      decos.push(Decoration.widget({ widget: new GroupWidget(done, open, key), block: true, side: -1 }).range(doc.line(first + 1).from));
+      if (!open) decos.push(Decoration.replace({ block: true }).range(doc.line(first + 1).from, doc.line(last + 1).to));
+    }
+    i = j - 1;
+  }
+  return Decoration.set(decos, true);
+}
+const checkedGroups = on => StateField.define({
+  create: state => ({ closed: new Set(), decos: groupDecos(state, new Set(), on) }),
+  update(v, tr){
+    let closed = v.closed, changed = tr.docChanged;
+    for (const e of tr.effects){
+      if (e.is(toggleGroup)){ closed = new Set(closed); closed.has(e.value) ? closed.delete(e.value) : closed.add(e.value); changed = true; }
+      if (e.is(regroup)) changed = true;
+    }
+    return changed ? { closed, decos: groupDecos(tr.state, closed, on) } : v;
+  },
+  provide: f => EditorView.decorations.from(f, v => v.decos),
 });
 
 function refsOf(doc){
@@ -345,13 +410,16 @@ export function createEditor(parent, opts){
   ];
   const view = new EditorView({ state: EditorState.create({ doc: '', extensions }), parent });
   let liveOn = false;
+  const groups = checkedGroups(() => !!opts.keepGroups?.());
   const ed = {
     view,
     setLive(on){
       liveOn = on;
       // the cm-live class (reading font, heading sizes) must come through CodeMirror, which owns the editor's classes
-      view.dispatch({ effects: live.reconfigure(on ? [livePreview(opts), liveTables, EditorView.editorAttributes.of({ class: 'cm-live' })] : []) });
+      view.dispatch({ effects: live.reconfigure(on ? [livePreview(opts), liveTables, groups, EditorView.editorAttributes.of({ class: 'cm-live' })] : []) });
     },
+    // redraw the "N checked items" folds (after the Keep option changes)
+    regroup(){ view.dispatch({ effects: regroup.of(null) }); },
     // a new document gets a fresh undo history
     reset(text){ ed.swap(ed.newState(text)); },
     // tabs: each tab keeps its own state (text, undo history, selection) and swaps it in
