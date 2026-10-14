@@ -9,7 +9,7 @@ import { makeZip, readZip } from './zip.js';
 import { host } from './host.js';
 import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.6.1';
+const VERSION = '2.6.2';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -764,10 +764,11 @@ $('#tree').addEventListener('contextmenu', async e => {
     ['Rename…', () => renamePath(p, isDir)],
     ['Delete (move to .trash)', () => trashPath(p, isDir)],
   ];
-  // published notes get their JotBird options
+  // JotBird options: Publish for a note that isn't published yet, the page's options for one that is
   if (jb.on && !isDir && isNote(p)){
     const pg = pageOf(cur.kind === 'lib' && cur.path === p ? text() : (tabs.find(t => t.cur.kind === 'lib' && t.cur.path === p)?.state.doc.toString() ?? await lib.fs.read(p).catch(() => '')));
-    if (pg) items.push(['Published', null, jbNoteItems(p, pg)]);
+    items.push(['JotBird', null, pg ? jbNoteItems(p, pg)
+      : [['Publish this note', async () => { if (!(cur.kind === 'lib' && cur.path === p)) await openLibFile(p); jbPublish(); }]]]);
   }
   showCtx(x, y, items);
 });
@@ -1719,7 +1720,9 @@ function jbRefresh(){
 }
 function jbChip(){
   const p = jbHere(), c = $('#jbChip');
-  c.hidden = !p; if (!p) return;
+  c.hidden = !jb.on;
+  // not published yet: a grey label that offers Publish
+  if (!p){ $('#jbChipText').textContent = 'Not published'; c.className = 'off'; c.title = 'Not published (JotBird)'; return; }
   const d = jbDays(p);
   $('#jbChipText').textContent = d != null && d < 0 ? 'Expired' : 'Published' + (d != null ? ` · ${d}d` : '');
   c.className = dayClass(d);
