@@ -10,7 +10,7 @@ import { toPlain, toEpub, copyRich, noFront } from './export.js';
 import { host } from './host.js';
 import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.9.0';
+const VERSION = '2.9.1';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -1518,6 +1518,27 @@ for (const [tab, id] of Object.entries(TAB_SWITCH)){
   $(id).addEventListener('click', () => setTabShown(tab, $(id).getAttribute('aria-pressed') !== 'true'));
 }
 $('#bSide').addEventListener('click', () => toggleSide());
+// phones and tablets: swipe right to open the sidebar, swipe left to close it. Only quick, mostly sideways
+// swipes count, and not ones that start on something that slides sideways itself (tables, code, the top bar)
+// or while text is being selected.
+{ let x0 = 0, y0 = 0, t0 = 0, on = false;
+  const slides = el => { for (let e = el; e && e !== document.body; e = e.parentElement) if (e.scrollWidth > e.clientWidth + 2 && getComputedStyle(e).overflowX !== 'hidden' && getComputedStyle(e).overflowX !== 'visible') return true; return false; };
+  document.addEventListener('touchstart', e => {
+    on = e.touches.length === 1 && !e.target.closest('header, .modal, #ctx, #ctxSub, .menu-list, input, textarea') && !slides(e.target);
+    if (!on) return;
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
+  }, { passive: true });
+  document.addEventListener('touchend', e => {
+    if (!on) return;
+    on = false;
+    const t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0;
+    if (Date.now() - t0 > 700 || Math.abs(dx) < 70 || Math.abs(dy) > Math.abs(dx) * 0.5) return;
+    if (!view.state.selection.main.empty && view.dom.contains(e.target)) return;   // dragging a text selection
+    const open = !$('#side').hidden;
+    if (dx > 0 && !open) toggleSide(true);
+    else if (dx < 0 && open) toggleSide(false);
+  }, { passive: true });
+}
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
 
 /* ---------------- Scroll sync (Split view) ---------------- */
