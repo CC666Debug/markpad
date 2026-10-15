@@ -239,7 +239,7 @@ function desktopHost(){
       const p = await dialog.save({ defaultPath: n, filters: [{ name: 'Zip', extensions: ['zip'] }] });
       if (!p) return null;
       let first = true;
-      return { write: async bytes => { await invoke('append_b64', { path: p, data: b64(bytes), first }); first = false; }, done: async () => true };
+      return { write: async bytes => { await invoke('append_b64', { path: p, data: b64(bytes), first }); first = false; }, done: async () => p };
     },
     async openZip(){
       const p = await dialog.open({ multiple: false, directory: false, filters: [{ name: 'Zip', extensions: ['zip'] }] });

@@ -217,8 +217,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     /* ---------------- backups: BackupZip makes and unpacks them file by file, so the page never holds the zip ---------------- */
-    private fun progress(msg: String) = runOnUiThread {
-        web.evaluateJavascript("window.__mpProgress && window.__mpProgress(${JSONObject.quote(msg)})", null)
+    // the page's progress box: about 4 updates a second at most, so the page keeps up
+    private var lastProgress = 0L
+    private fun progress(msg: String, done: Int = 0, total: Int = 0, force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastProgress < 250) return
+        lastProgress = now
+        runOnUiThread { web.evaluateJavascript("window.__mpProgress && window.__mpProgress(${JSONObject.quote(msg)}, $done, $total)", null) }
     }
     private fun pwOf(a: JSONObject) = if (a.isNull("password")) "" else a.optString("password")
     private fun files(tree: JSONArray, out: MutableList<String> = ArrayList()): MutableList<String> {
@@ -237,27 +242,29 @@ class MainActivity : AppCompatActivity() {
         val f = File(dir, a.getString("name").replace(Regex("[\\\\/:*?\"<>|]"), "-"))
         try {
             BackupZip.Writer(f, pwOf(a), File(cacheDir, "backup.part")).use { w ->
+                progress("Backing up… 0 of ${"%,d".format(paths.size)} files", 0, paths.size, true)
                 paths.forEachIndexed { i, p ->
-                    if (i % 50 == 0) progress("Backing up… $i of ${paths.size} files")
+                    progress("Backing up… ${"%,d".format(i + 1)} of ${"%,d".format(paths.size)} files", i + 1, paths.size)
                     l.open(p).use { w.add(p, it) }
                 }
             }
         } catch (e: Exception) { f.delete(); throw e }
         share(f)
-        return paths.size.toString()
+        return JSONObject().put("n", paths.size).put("bytes", f.length()).toString()
     }
     // unpacks into dir (a new "Restored …" folder); a wrong or missing password fails before anything is written
     private fun restoreZip(a: JSONObject): String {
         val l = lib(a); val dir = a.getString("dir"); val pw = pwOf(a)
         val tmp = File(cacheDir, "restore.zip")
         try {
+            progress("Opening the backup…", force = true)
             contentResolver.openInputStream(Uri.parse(a.getString("uri")))!!.use { i -> tmp.outputStream().use { i.copyTo(it, 1 shl 16) } }
             RandomAccessFile(tmp, "r").use { f ->
                 val list = BackupZip.entries(f).filter { e -> !e.name.endsWith("/") && e.name.split('/').none { it == ".." } }
                 if (list.isEmpty()) throw Exception("Nothing to restore in that zip")
                 BackupZip.checkPassword(f, list, pw)
                 list.forEachIndexed { i, e ->
-                    if (i % 50 == 0) progress("Restoring… $i of ${list.size} files")
+                    progress("Restoring… ${"%,d".format(i + 1)} of ${"%,d".format(list.size)} files", i + 1, list.size)
                     BackupZip.open(f, e, pw).use { src -> l.writeFrom("$dir/${e.name.trimStart('/')}") { out -> BackupZip.copy(src, out, e) } }
                 }
                 return list.size.toString()

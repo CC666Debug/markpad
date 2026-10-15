@@ -10,7 +10,7 @@ import { toPlain, toEpub, copyRich, noFront } from './export.js';
 import { host } from './host.js';
 import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.8.0';
+const VERSION = '2.8.1';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -32,7 +32,18 @@ const kvGet = k => idb('readonly', st => st.get(k)).catch(() => undefined);
 const kvSet = (k, v) => idb('readwrite', st => st.put(v, k)).catch(() => {});
 
 let toastTimer;
-window.__mpProgress = msg => toast(msg);   // Android: "Backing up… 300 of 2900 files"
+// Long jobs (backup, restore): a box that stays until the job ends, with a bar. done/total unknown = a moving bar.
+function busy(msg, done, total){
+  const b = $('#busy');
+  if (msg == null){ b.hidden = true; return; }
+  b.hidden = false; $('#busyMsg').textContent = msg;
+  b.classList.toggle('wait', !total);
+  $('#busyBar').style.width = total ? Math.round(done / total * 100) + '%' : '';
+}
+const nf = n => n.toLocaleString();
+const mb = n => n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+window.__mpProgress = (msg, done, total) => busy(msg, done, total);   // Android: "Backing up… 300 of 2,900 files"
+const notice = msg => ask(msg, { buttons: [{ label: 'OK', value: true, primary: true }] });
 function toast(msg){
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
@@ -1045,30 +1056,42 @@ Everything: every file in the folder, also PDFs, audio and Obsidian's settings (
   if (!(await flush())) return;
   stash();
   const name = `Markpad backup - ${lib.desc.name.replace(/[\\/:*?"<>|]/g, '-')} - ${today()}.zip`;
-  const ready = n => toast(`Backup ready: ${n} file${n > 1 ? 's' : ''}${pw ? ', with a password' : ''}`);
+  const ready = (n, bytes, where) => notice(`Backup ready: ${nf(n)} file${n > 1 ? 's' : ''}, ${mb(bytes)}${pw ? ', with a password' : ''}.` + (where ? `\n\nSaved as ${where}` : ''));
   // the zip is made one file at a time and goes straight out, so a big library never has to fit in memory
   try {
-    if (lib.fs.backup){ toast('Making the backup…'); ready(await lib.fs.backup(name, what === 'all', pw || '')); return; }   // Android: the app zips from storage itself
+    if (lib.fs.backup){   // Android: the app zips from storage itself, then the share menu opens
+      busy('Reading the library…');
+      const r = await lib.fs.backup(name, what === 'all', pw || '');
+      busy(null); await ready(r.n, r.bytes); return;
+    }
+    busy('Reading the library…');
     const list = what === 'all' ? allFiles(await lib.fs.list(true)) : allFiles();
+    busy(null);
     if (!list.length){ toast('This library has no notes yet'); return; }
     const sink = await host.saveStream(name);
     if (!sink) return;
-    toast('Making the backup…');
     const te = new TextEncoder();
+    let i = 0, bytes = 0;
+    busy(`Backing up… 0 of ${nf(list.length)} files`, 0, list.length);
     const files = list.map(f => ({ name: f.path, read: async () => {
+      if (++i % 10 === 0 || i === list.length) busy(`Backing up… ${nf(i)} of ${nf(list.length)} files`, i, list.length);
       const t = tabs.find(t => t.cur.kind === 'lib' && t.cur.path === f.path);
       return t ? te.encode(t.state.doc.toString()) : isNote(f.name) ? te.encode(await lib.fs.read(f.path)) : lib.fs.readBin(f.path);
     } }));
-    await makeZip(files, pw, sink.write);
-    if (await sink.done()) ready(files.length);
-  } catch (e){ toast("Couldn't back up: " + (e.message || e)); }
+    await makeZip(files, pw, async b => { bytes += b.length; await sink.write(b); });
+    busy('Saving…');
+    const where = await sink.done();
+    busy(null);
+    if (where) await ready(files.length, bytes, typeof where === 'string' ? where : '');
+  } catch (e){ busy(null); await notice("Couldn't back up: " + (e.message || e)); }
 }
 async function restoreBackup(){
   if (!lib){ toggleSide(true); toast('Pick a library first'); return; }
   const restored = async (dir, n) => {
     expanded.add(dir); selectedFolder = dir;
     await refreshTree();
-    toast(`Restored ${n} file${n > 1 ? 's' : ''} into “${dir}”`);
+    busy(null);
+    await notice(`Restored ${nf(n)} file${n > 1 ? 's' : ''} into the folder “${dir}”.`);
   };
   if (lib.fs.restore){   // Android: the app unzips straight into the library, file by file
     let z;
@@ -1076,9 +1099,10 @@ async function restoreBackup(){
     if (!z) return;
     const dir = await uniquePath('', 'Restored ' + today());
     for (let pw = null; ;){
-      try { toast('Restoring…'); await restored(dir, await lib.fs.restore(z.uri, dir, pw || '')); return; }
+      try { busy('Opening the backup…'); await restored(dir, await lib.fs.restore(z.uri, dir, pw || '')); return; }
       catch (e){
-        if (e.message !== 'password'){ toast("Couldn't restore: " + e.message); await refreshTree(); return; }
+        busy(null);
+        if (e.message !== 'password'){ await refreshTree(); await notice("Couldn't restore: " + e.message); return; }
         pw = await askPassword(pw == null ? `“${z.name}” has a password` : 'Wrong password. Try again', 'Restore');
         if (pw == null) return;
       }
@@ -1101,7 +1125,11 @@ async function restoreBackup(){
   if (!files.length){ toast('Nothing to restore in that zip'); return; }
   try {
     const dir = await uniquePath('', 'Restored ' + today());
-    for (const f of files) await lib.fs.writeBin(normPath(joinPath(dir, f.name.replace(/^\/+/, ''))), f.data);
+    let i = 0;
+    for (const f of files){
+      if (++i % 10 === 0 || i === files.length) busy(`Restoring… ${nf(i)} of ${nf(files.length)} files`, i, files.length);
+      await lib.fs.writeBin(normPath(joinPath(dir, f.name.replace(/^\/+/, ''))), f.data);
+    }
     await restored(dir, files.length);
   } catch (e){ toast("Couldn't restore: " + (e.message || e)); }
 }
