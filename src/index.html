@@ -157,6 +157,10 @@ main{flex:1;display:flex;min-height:0;position:relative}
 #olList button:hover{color:var(--text)}
 #tagList,#linkList{padding:4px}
 #linkList .lc{padding:4px 8px;color:var(--muted);font-size:12px}
+#linkList .lo{display:flex;width:100%;height:auto;min-height:28px;justify-content:space-between;align-items:center;gap:8px;text-align:left;padding:4px 8px;border-radius:5px;white-space:normal;line-height:1.3;color:var(--accent);word-break:break-word}
+#linkList .lo small{color:var(--muted);flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#linkList .lo.missing{color:var(--muted);font-style:italic}
+#linkList .empty.small{padding:6px 8px 10px;font-size:12.5px;text-align:left}
 #linkList .lh{display:flex;width:100%;height:auto;min-height:28px;justify-content:space-between;align-items:center;text-align:left;padding:4px 8px;border-radius:5px;white-space:normal;line-height:1.3;color:var(--accent);font-weight:600}
 #linkList .lh small{color:var(--muted);font-weight:400}
 #linkList .ln{display:block;width:100%;height:auto;text-align:left;padding:2px 8px 6px 22px;border-radius:5px;white-space:normal;line-height:1.35;color:var(--muted);font-size:12.5px}
@@ -433,7 +437,7 @@ body.focus .cm-scroller{font-size:17px!important}
     <button data-f="ol" title="Numbered list">1.</button>
     <button data-f="task" title="Task list">☑</button>
     <button data-f="code" title="Code">&lt;/&gt;</button>
-    <button data-f="link" title="Link (Ctrl+K)">🔗</button>
+    <button data-f="link" title="Link to a note or a web page (Ctrl+K)">🔗</button>
     <button data-f="image" title="Image" class="hide-sm">🖼</button>
     <button data-f="table" title="Table" class="hide-sm">▦</button>
     <button data-f="hr" title="Divider" class="hide-sm">―</button>
@@ -488,7 +492,7 @@ body.focus .cm-scroller{font-size:17px!important}
         <button id="bRefresh" title="Refresh"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg></button>
         <button id="bLibMenu" title="Switch library">⋯</button>
       </div>
-      <div class="pickbar" id="pickBar" hidden><span id="pickCount"></span><button id="bPickExport">Export</button><button id="bPickMove">Move…</button><button id="bPickDel" title="Move to .trash">Delete</button><button id="bPickClear" title="Clear selection (Esc)">✕</button></div>
+      <div class="pickbar" id="pickBar" hidden><span id="pickCount"></span><button id="bPickExport">Export</button><button id="bPickMerge" title="Make one note out of the picked notes">Merge…</button><button id="bPickMove">Move…</button><button id="bPickDel" title="Move to .trash">Delete</button><button id="bPickClear" title="Clear selection (Esc)">✕</button></div>
       <div id="tree"></div>
       <div class="libempty" id="libEmpty"></div>
     </div>

@@ -1,6 +1,6 @@
 [package]
 name = "markpad"
-version = "2.8.1"
+version = "2.9.0"
 description = "Markpad: a slim Markdown editor"
 edition = "2021"
 

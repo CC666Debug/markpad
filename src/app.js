@@ -10,7 +10,7 @@ import { toPlain, toEpub, copyRich, noFront } from './export.js';
 import { host } from './host.js';
 import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.8.1';
+const VERSION = '2.9.0';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -300,6 +300,7 @@ function render(){
   const t = text(), words = (t.match(/\S+/g) || []).length;
   $('#stats').textContent = `${words.toLocaleString()} words · ${t.length.toLocaleString()} chars · ${Math.max(1, Math.round(words / 230))} min read`;
   buildOutline();
+  if (linksShown()) linksSoon();
   if (scrollSrc === 'ed') syncScroll('ed');
 }
 function scheduleRender(){
@@ -620,7 +621,7 @@ async function openLibrary(desc, quiet){
   if (lib && lib.desc.id !== desc.id) await detachLibTabs();
   lib = { desc, fs: host.lib(desc) };
   expanded = new Set(JSON.parse(store.get('open.' + desc.id) || '[]'));
-  libs = [desc, ...libs.filter(l => l.id !== desc.id)].slice(0, 6);
+  libs = [desc, ...libs.filter(l => l.id !== desc.id && !(desc.portable && l.portable))].slice(0, 6);
   kvSet('libs', libs); store.set('lib', desc.id);
   $('#libName').textContent = desc.name; $('#libName').title = desc.path || desc.uri || desc.name;
   await refreshTree();
@@ -774,6 +775,7 @@ $('#bPickClear').addEventListener('click', clearPicks);
 $('#bPickExport').addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); showCtx(r.left, r.bottom + 4, exportItems(topPicks())); });
 $('#bPickMove').addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); moveMenu(topPicks(), r.left, r.bottom + 4); });
 $('#bPickDel').addEventListener('click', () => trashPaths(topPicks()));
+$('#bPickMerge').addEventListener('click', () => mergeNotes(topPicks()));
 let sideCloseTimer;
 $('#tree').addEventListener('dblclick', e => {
   const b = e.target.closest('.row'); if (!b) return;
@@ -878,6 +880,7 @@ $('#tree').addEventListener('contextmenu', async e => {
     const ps = topPicks();
     showCtx(x, y, [
       ['Export', null, exportItems(ps)],
+      ['Merge into one note…', () => mergeNotes(ps)],
       ['Move to…', () => moveMenu(ps, x, y)],
       ['Delete (move to .trash)', () => trashPaths(ps)],
       ['Clear selection', clearPicks],
@@ -977,6 +980,45 @@ function exportItems(paths){
   };
   const several = paths.length > 1 || paths.some(dirExists);
   return [...EXPORTS.map(([label, fmt]) => [label, run(fmt)]), ...(several ? [['Markdown files (.zip)', run('md')]] : [])];
+}
+// the notes inside some picked notes and folders, in file list order, with their text (open tabs as they are now)
+async function notesIn(paths){
+  const set = new Set(paths), notes = [];
+  stash();
+  const walk = (list, inPick) => {
+    for (const n of sortedList(list)){
+      const hit = inPick || set.has(n.path);
+      if (n.dir){ if (!n.name.startsWith('.')) walk(n.children || [], hit); }
+      else if (hit && isNote(n.name)) notes.push(n);
+    }
+  };
+  walk(tree, false);
+  return Promise.all(notes.map(async n => ({ name: n.name, path: n.path,
+    text: cur.kind === 'lib' && cur.path === n.path ? text() : tabs.find(t => t.cur.kind === 'lib' && t.cur.path === n.path)?.state.doc.toString() ?? await lib.fs.read(n.path) })));
+}
+// several notes → one new note, each under its own name as a heading (properties boxes left out)
+async function mergeNotes(paths){
+  if (!(await flush())) return;
+  const notes = await notesIn(paths);
+  if (notes.length < 2){ toast('Pick two or more notes to merge'); return; }
+  const name = await ask(`Merge ${notes.length} notes into one new note (in file list order). Its name:`, { input: 'Merged note', buttons: [{ label: 'Cancel', value: null }, { label: 'Next', value: true, primary: true }] });
+  if (!name) return;
+  const keep = await ask(`What happens to the ${notes.length} original notes?\n\nMoving them to .trash can be undone from the library's .trash folder. [[Links]] to them in other notes would stop working.`,
+    { buttons: [{ label: 'Cancel', value: null }, { label: 'Move them to .trash', value: 'trash' }, { label: 'Keep them', value: 'keep', primary: true }] });
+  if (!keep) return;
+  const body = notes.map(n => {
+    const t = noFront(n.text).trim(), title = n.name.replace(/\.(md|markdown|mdown|mkd|txt)$/i, '');
+    return /^#\s/.test(t) ? t : `# ${title}\n\n${t}`;
+  }).join('\n\n');
+  try {
+    const p = await uniquePath(dirname(notes[0].path), name.replace(/\.md$/i, '').replace(/[\\/:*?"<>|]/g, '-') + '.md');
+    await lib.fs.write(p, body + '\n');
+    if (keep === 'trash') for (const n of notes) if (!(await trashPath(n.path, false, true))) break;
+    clearPicks();
+    await refreshTree();
+    await openLibFile(p);
+    toast(`Merged ${notes.length} notes into “${basename(p).replace(/\.md$/i, '')}”`);
+  } catch (e){ toast("Couldn't merge: " + (e.message || e)); }
 }
 async function trashPaths(paths){
   if (paths.length === 1) return trashPath(paths[0], dirExists(paths[0]));
@@ -1152,8 +1194,9 @@ $('#bRefresh').addEventListener('click', refreshTree);
 $('#bLibMenu').addEventListener('click', e => {
   const r = e.currentTarget.getBoundingClientRect();
   showCtx(r.left, r.bottom + 4, [
-    ...libs.filter(l => l.id !== lib?.desc.id).map(l => ['Switch to ' + l.name, () => switchLibrary(l)]),
-    ...(host.canPortable && !lib?.desc.portable ? [['Portable notes', async () => switchLibrary(await host.portableLibrary())]] : []),
+    // the portable library is looked up fresh (its folder can move with the app), so old remembered copies of it are left out
+    ...libs.filter(l => l.id !== lib?.desc.id && !l.portable).map(l => ['Switch to ' + l.name, () => switchLibrary(l)]),
+    ...(host.canPortable && !lib?.desc.portable ? [['Switch to Portable notes', async () => switchLibrary(await host.portableLibrary())]] : []),
     ['Open a folder or vault…', async () => { if (await flush()) pickLibrary(); }],
     ['Close library', closeLibrary],
   ]);
@@ -1250,7 +1293,7 @@ function qsFilter(){
   };
   qsHits = allFiles().filter(f => isNote(f.name)).map(f => [score(f), f]).filter(x => x[0]).sort((a, b) => b[0] - a[0] || a[1].path.length - b[1].path.length).slice(0, 50).map(x => x[1]);
   qsOn = 0;
-  const create = q && !qsHits.some(f => f.name.toLowerCase().replace(/\.md$/, '') === q) ? `<button data-new="1">＋ Create “${esc($('#qsInput').value.trim())}”</button>` : '';
+  const create = q && !qsHits.some(f => f.name.toLowerCase().replace(/\.md$/, '') === q) ? `<button data-new="1">＋ ${qsMode === 'link' ? 'Link to a new note' : 'Create'} “${esc($('#qsInput').value.trim())}”</button>` : '';
   $('#qsList').innerHTML = qsHits.map((f, k) => `<button data-k="${k}"${k ? '' : ' class="on"'}>${esc(f.name.replace(/\.md$/i, ''))}<small>${esc(dirname(f.path) || '/')}</small></button>`).join('') + create;
   if (!qsHits.length && create) $('#qsList').firstChild.classList.add('on');
 }
@@ -1258,6 +1301,7 @@ function qsPick(b, forceNew){
   if (b?.dataset.tag){ $('#qsInput').value = '#' + b.dataset.tag; qsFilter(); $('#qsInput').focus(); return; }
   $('#qs').hidden = true;
   if (!b || !b.dataset.k && !b.dataset.new) return;
+  if (qsMode === 'link'){ insertNoteLink(b.dataset.new ? $('#qsInput').value.trim() : linkName(qsHits[+b.dataset.k].path)); return; }
   if (qsMode === 'search'){ const h = qsHits[+b.dataset.k]; openLibFile(h.f.path, forceNew).then(() => jumpToLine(h.line)); }
   else if (b.dataset.new) flush().then(() => createNote(selectedDir(), $('#qsInput').value.trim()));
   else openLibFile(qsHits[+b.dataset.k].path, forceNew);
@@ -1271,7 +1315,7 @@ $('#qsInput').addEventListener('keydown', e => {
     qsOn = (qsOn + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % Math.max(1, items.length);
     items[qsOn]?.classList.add('on'); items[qsOn]?.scrollIntoView({ block: 'nearest' });
   } else if (e.key === 'Enter'){ e.preventDefault(); qsPick(items[qsOn], e.ctrlKey || e.metaKey); }
-  else if (e.key === 'Escape'){ e.preventDefault(); $('#qs').hidden = true; view.focus(); }
+  else if (e.key === 'Escape'){ e.preventDefault(); $('#qs').hidden = true; linkSel = null; view.focus(); }
 });
 $('#qsList').addEventListener('click', e => qsPick(e.target.closest('button')));
 $('#qs').addEventListener('pointerdown', e => { if (e.target.id === 'qs') $('#qs').hidden = true; });
@@ -1383,7 +1427,31 @@ $('#tagList').addEventListener('click', e => {
   else { openLibFile(b.dataset.path, e.ctrlKey || e.metaKey).then(() => buildTags()); if (window.innerWidth <= 700) toggleSide(false); }
 });
 /* Links tab: the notes that link to the open note ([[wiki links]] and [text](note.md)), with the line each link is on */
-const linksShown = () => !$('#linkPane').hidden && !$('#side').hidden;
+function linksShown(){ return !$('#linkPane').hidden && !$('#side').hidden; }
+// every link inside the open note: [[notes]], [text](note.md or a web address) and bare web addresses, each once
+function linksOut(t){
+  const out = [], seen = new Set(), add = (key, o) => { if (!seen.has(key)){ seen.add(key); out.push(o); } };
+  let fence = false;
+  t.split('\n').forEach((l, i) => {
+    if (FENCE_RE.test(l)){ fence = !fence; return; }
+    if (fence) return;
+    const s = l.replace(/`[^`]*`/g, '');
+    for (const m of s.matchAll(/(!?)\[\[([^\]|\n]+)(?:\|([^\]\n]*))?\]\]/g)){
+      const target = m[2].trim(), [name] = target.split('#');
+      if (m[1] && IMG_EXT.test(name)) continue;   // a picture shown in the note, not a link
+      add('w:' + target.toLowerCase(), { wiki: target, label: (m[3] || target).trim(), line: i, missing: !!lib && !!name.trim() && !resolveWiki(name) });
+    }
+    for (const m of s.matchAll(/(!?)\[([^\]]*)\]\(<?([^)>\s]+)>?(?:\s+"[^"]*")?\)/g)){
+      if (m[1]) continue;
+      add('h:' + m[3], { href: m[3], label: plain(m[2]) || m[3], line: i, web: /^[a-z][\w+.-]*:/i.test(m[3]) });
+    }
+    for (const m of s.replace(/\]\([^)]*\)/g, '').matchAll(/\bhttps?:\/\/[^\s<>()\]]+[^\s<>()\].,;:!?'"]/g))
+      add('h:' + m[0], { href: m[0], label: m[0], line: i, web: true });
+  });
+  return out;
+}
+let linksTimer = 0;
+const linksSoon = () => { clearTimeout(linksTimer); linksTimer = setTimeout(() => { if (linksShown()) buildLinks(); }, 500); };
 // the lines of a note that link to `me` (a link can only reach a note with the same file name, so check that first: big vaults stay quick)
 function linesLinkingTo(f, lines, me){
   const base = basename(me).replace(/\.md$/i, '').toLowerCase(), out = [];
@@ -1403,9 +1471,14 @@ function linesLinkingTo(f, lines, me){
 }
 async function buildLinks(reread){
   const box = $('#linkList');
-  if (!lib){ box.innerHTML = '<div class="empty">Open a library (Files tab) to see links between notes.</div>'; return; }
-  if (cur.kind !== 'lib'){ box.innerHTML = '<div class="empty">Open a note from the library to see which notes link to it.</div>'; return; }
-  if (reread){ if (!noteTexts.length) box.innerHTML = '<div class="empty">Reading notes…</div>'; await readNotes(); }
+  const outs = linksOut(text());
+  const host_ = h => { try { return new URL(h).hostname.replace(/^www\./, ''); } catch (_) { return h; } };
+  const outHtml = `<div class="lc">In this note: ${outs.length} link${outs.length === 1 ? '' : 's'}</div>` + (outs.length
+    ? outs.map((o, k) => `<button class="lo${o.missing ? ' missing' : ''}" data-out="${k}" title="${esc(o.wiki || o.href)}">${esc(o.label)}<small>${o.wiki ? (o.missing ? 'not made yet' : 'note') : o.web ? esc(host_(o.href)) : 'note'}</small></button>`).join('')
+    : '<div class="empty small">No links in this note. Type [[ to link a note, or paste a web address.</div>');
+  box._outs = outs;
+  if (!lib || cur.kind !== 'lib'){ box.innerHTML = outHtml; return; }
+  if (reread){ if (!noteTexts.length) box.innerHTML = outHtml + '<div class="empty small">Reading notes…</div>'; await readNotes(); }
   const me = cur.path, hits = [];
   for (const { f, lines } of noteTexts){
     if (f.path === me) continue;
@@ -1414,13 +1487,19 @@ async function buildLinks(reread){
   }
   hits.sort((a, b) => a.f.name.localeCompare(b.f.name, undefined, { numeric: true, sensitivity: 'base' }));
   const snip = l => esc(plain(l.replace(/^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+|#+\s+|>\s?)/, '')).slice(0, 160)) || '(link)';
-  box.innerHTML = hits.length
-    ? `<div class="lc">Linked from ${hits.length} note${hits.length === 1 ? '' : 's'}</div>` +
-      hits.map(h => `<button class="lh" data-path="${esc(h.f.path)}" data-line="${h.ls[0]}">${esc(h.f.name.replace(/\.md$/i, ''))}<small>${h.ls.length}</small></button>` +
+  box.innerHTML = outHtml + `<div class="lc" style="margin-top:10px">Linked from: ${hits.length} note${hits.length === 1 ? '' : 's'}</div>` + (hits.length
+    ? hits.map(h => `<button class="lh" data-path="${esc(h.f.path)}" data-line="${h.ls[0]}">${esc(h.f.name.replace(/\.md$/i, ''))}<small>${h.ls.length}</small></button>` +
         h.ls.slice(0, 5).map(i => `<button class="ln" data-path="${esc(h.f.path)}" data-line="${i}">${snip(h.lines[i])}</button>`).join('')).join('')
-    : `<div class="empty">No notes link here yet. Type [[${esc(cur.name.replace(/\.md$/i, ''))}]] in another note to link to this one.</div>`;
+    : `<div class="empty small">No other notes link here yet. Type [[${esc(cur.name.replace(/\.md$/i, ''))}]] in another note to link to this one.</div>`);
 }
 $('#linkList').addEventListener('click', async e => {
+  const o = e.target.closest('button[data-out]');
+  if (o){   // a link in this note: open the note or the web page
+    const l = $('#linkList')._outs[+o.dataset.out];
+    if (l.wiki) openWiki(l.wiki, e.ctrlKey || e.metaKey); else openLink(l.href);
+    if (window.innerWidth <= 700 && !l.web) toggleSide(false);
+    return;
+  }
   const b = e.target.closest('button[data-path]'); if (!b) return;
   if (!(await flush())) return;
   await openLibFile(b.dataset.path, e.ctrlKey || e.metaKey);
@@ -1515,10 +1594,11 @@ const FORMATS = {
   ul:    () => toggleLines(/^\s*[-*+]\s+(?!\[[ xX]\])/, l => indentOf(l) + '- ' + l.trimStart()),
   ol:    () => toggleLines(/^\s*\d+[.)]\s+/, (l, n) => indentOf(l) + n + '. ' + l.trimStart()),
   task:  () => toggleLines(/^\s*[-*+]\s+\[[ xX]\]\s+/, l => indentOf(l) + '- [ ] ' + l.trimStart()),
-  link:  () => {
-    const { from: s, to: e } = sel(), picked = text().slice(s, e);
-    if (/^https?:\/\/\S+$/.test(picked)) replaceRange(s, e, `[link text](${picked})`, s + 1, s + 10);
-    else { const t = picked || 'link text'; replaceRange(s, e, `[${t}](https://)`, s + t.length + 3, s + t.length + 11); }
+  link:  () => {   // a note or a web address: a small menu at the button (or at the cursor for Ctrl+K)
+    if (!lib) return webLink();
+    const b = fmtButton, r = b ? b.getBoundingClientRect() : view.coordsAtPos(sel().head) || { left: 100, bottom: 100 };
+    fmtButton = null;
+    showCtx(r.left, r.bottom + 4, [['Link to a note…', openLinkPicker], ['Web link…', webLink]]);
   },
   image: () => {
     const { from: s, to: e } = sel(), t = text().slice(s, e) || 'alt text';
@@ -1529,10 +1609,78 @@ const FORMATS = {
   undo:  () => { undo(view); view.focus(); },
   redo:  () => { redo(view); view.focus(); },
 };
+let fmtButton = null;   // the button that ran a format (menus open under it)
 document.querySelectorAll('.fmt button').forEach(b => b.addEventListener('click', () => {
   if (main.dataset.view === 'preview') setView(lastEditView);
+  fmtButton = b;
   FORMATS[b.dataset.f]();
+  fmtButton = null;
 }));
+
+/* ---------------- Links: to a note ([[Note]]) or a web page ([text](address)) ---------------- */
+let linkSel = null;   // what was selected when the note picker opened
+function openLinkPicker(){
+  if (!lib){ toggleSide(true); toast('Pick a library first'); return; }
+  linkSel = { from: sel().from, to: sel().to };
+  qsMode = 'link'; $('#qsInput').placeholder = 'Link to which note?';
+  $('#qs').hidden = false; $('#qsInput').value = ''; qsFilter(); $('#qsInput').focus();
+}
+function insertNoteLink(name){
+  const { from, to } = linkSel || sel(), picked = text().slice(from, to).trim();
+  const link = `[[${name}${picked && picked !== name ? '|' + picked : ''}]]`;
+  replaceRange(from, to, link, from + link.length);
+  linkSel = null;
+}
+// the shortest name that still finds the note: its name, or its path when another note has the same name
+function linkName(path){
+  const n = basename(path).replace(/\.md$/i, ''), same = allFiles().filter(f => f.name.toLowerCase() === basename(path).toLowerCase());
+  return same.length > 1 ? path.replace(/\.md$/i, '') : n;
+}
+async function webLink(){
+  const { from, to } = sel(), picked = text().slice(from, to).trim(), isUrl = /^[a-z][\w+.-]*:\/\/\S+$/i.test(picked);
+  const url = await ask('Web address', { input: isUrl ? picked : 'https://', buttons: [{ label: 'Cancel', value: null }, { label: 'Add link', value: true, primary: true }] });
+  if (!url || url === 'https://') { view.focus(); return; }
+  const full = /^[a-z][\w+.-]*:/i.test(url) ? url : 'https://' + url;
+  let label = isUrl ? '' : picked;
+  if (!label){ try { label = new URL(full).hostname.replace(/^www\./, ''); } catch (_) { label = 'link'; } }
+  const link = `[${label}](${full.replace(/ /g, '%20').replace(/\)/g, '%29')})`;
+  replaceRange(from, to, link, from + 1, from + 1 + label.length);   // the words stay selected, ready to type over
+}
+
+/* ---------------- Right-click inside a note (with a mouse; phones keep their own text menu) ---------------- */
+// the link under a spot in the text: { wiki } or { href } or null
+function linkAt(pos){
+  const line = view.state.doc.lineAt(pos), t = line.text, at = pos - line.from;
+  for (const re of [/!?\[\[([^\]|\n]+)(?:\|[^\]\n]*)?\]\]/g, /!?\[[^\]]*\]\(<?([^)>\s]+)>?(?:\s+"[^"]*")?\)/g, /\bhttps?:\/\/[^\s<>()\]]+[^\s<>()\].,;:!?'"]/g])
+    for (const m of t.matchAll(re)) if (at >= m.index && at <= m.index + m[0].length)
+      return re.source.startsWith('!?\\[\\[') ? { wiki: m[1].trim() } : { href: m[1] || m[0] };
+  return null;
+}
+$('#editPane').addEventListener('contextmenu', e => {
+  if (!view.dom.contains(e.target)) return;
+  if (!hoverable.matches) return;
+  e.preventDefault();
+  const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }), s = sel();
+  if (pos != null && (s.empty || pos < s.from || pos > s.to)) view.dispatch({ selection: { anchor: pos } });
+  const has = !sel().empty, l = pos != null ? linkAt(pos) : null, x = e.clientX, y = e.clientY;
+  const clip = async (cut) => {
+    const r = sel(), t = text().slice(r.from, r.to);
+    try { await navigator.clipboard.writeText(t); if (cut) replaceRange(r.from, r.to, '', r.from); } catch (_) { toast(cut ? 'Use Ctrl+X to cut' : 'Use Ctrl+C to copy'); }
+  };
+  const items = [];
+  if (l){
+    items.push(['Open link', () => l.wiki ? openWiki(l.wiki) : openLink(l.href)]);
+    items.push(['Copy link address', async () => { try { await navigator.clipboard.writeText(l.wiki ? '[[' + l.wiki + ']]' : l.href); toast('Copied'); } catch (_) {} }]);
+  }
+  if (has) items.push(['Cut', () => clip(true)], ['Copy', () => clip(false)]);
+  items.push(['Paste', async () => {
+    try { const t = await navigator.clipboard.readText(); const r = sel(); replaceRange(r.from, r.to, t, r.from + t.length); }
+    catch (_) { toast('Use Ctrl+V to paste'); }
+  }]);
+  if (lib) items.push(['Link to a note…', openLinkPicker]);
+  items.push(['Web link…', webLink]);
+  showCtx(x, y, items);
+});
 
 /* ---------------- Checklists (like Google Keep / Obsidian) ---------------- */
 const TASK_RE = /^(\s*)(?:[-*+]|\d{1,9}[.)])[ \t]+\[([ xX])\]/;
