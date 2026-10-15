@@ -10,7 +10,7 @@ import { toPlain, toEpub, copyRich, noFront } from './export.js';
 import { host } from './host.js';
 import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.7.0';
+const VERSION = '2.8.0';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -32,6 +32,7 @@ const kvGet = k => idb('readonly', st => st.get(k)).catch(() => undefined);
 const kvSet = (k, v) => idb('readwrite', st => st.put(v, k)).catch(() => {});
 
 let toastTimer;
+window.__mpProgress = msg => toast(msg);   // Android: "Backing up… 300 of 2900 files"
 function toast(msg){
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
@@ -137,6 +138,7 @@ function useTab(i){
   $('#bFind').setAttribute('aria-pressed', String(searchPanelOpen(view.state)));
   pv.scrollTop = 0;
   updateTitle(); render(); updateCursor(); markTree(); saveSession();
+  if (linksShown()) buildLinks();
   if (main.dataset.view !== 'preview') view.focus();
 }
 async function selectTab(i){
@@ -428,7 +430,7 @@ async function save(saveAs, quiet){
       await lib.fs.write(cur.path, t);
       cur.mtime = await lib.fs.mtime(cur.path).catch(() => 0);
       if (sortMode.startsWith('mod')){ mtimes.set(cur.path, cur.mtime); renderTree(); }
-      if (!$('#tagPane').hidden && !$('#side').hidden){ const n = noteTexts.find(n => n.f.path === cur.path); if (n){ n.lines = t.split('\n'); buildTags(); } }
+      if ((!$('#tagPane').hidden || !$('#linkPane').hidden) && !$('#side').hidden){ const n = noteTexts.find(n => n.f.path === cur.path); if (n){ n.lines = t.split('\n'); if (!$('#tagPane').hidden) buildTags(); } }
       if (text() === t) setDirty(false);
       if (!quiet) toast('Saved');
       return;
@@ -622,6 +624,7 @@ async function refreshTree(){
   catch (e){ tree = []; toast("Couldn't read the library: " + (e.message || e)); }
   renderTree();
   if (!$('#tagPane').hidden) buildTags(true);
+  if (!$('#linkPane').hidden) buildLinks(true);
 }
 function renderLibEmpty(needs){
   $('#libHead').hidden = !lib; $('#tree').hidden = !lib;
@@ -1027,28 +1030,60 @@ async function askPassword(msg, label){
 }
 async function backupLibrary(){
   if (!lib){ toggleSide(true); toast('Pick a library first'); return; }
+  // notes-only skips PDFs, audio, canvases and .obsidian; "everything" is a full copy of the folder (not the trash)
+  const what = await ask(`Back up “${lib.desc.name}”: what goes in the zip?
+
+Everything: every file in the folder, also PDFs, audio and Obsidian's settings (.obsidian). Notes and pictures: only what the file list shows.`,
+    { buttons: [{ label: 'Cancel', value: null }, { label: 'Notes and pictures', value: 'notes' }, { label: 'Everything', value: 'all', primary: true }] });
+  if (!what) return;
   const pw = await askPassword(`Back up “${lib.desc.name}” as a zip.\n\nPassword (optional, leave empty for none). It can't be recovered if you forget it.`, 'Back up');
   if (pw == null) return;
   if (pw){
     if (!/^[\x20-\x7e]+$/.test(pw)){ toast('Use plain keyboard letters, numbers and symbols (no accents or emoji) so other zip apps can open it'); return; }
     if ((await askPassword('Type the password again', 'Back up')) !== pw){ toast("The passwords didn't match"); return; }
   }
-  await flush(); stash();
-  toast('Making the backup…');
+  if (!(await flush())) return;
+  stash();
+  const name = `Markpad backup - ${lib.desc.name.replace(/[\\/:*?"<>|]/g, '-')} - ${today()}.zip`;
+  const ready = n => toast(`Backup ready: ${n} file${n > 1 ? 's' : ''}${pw ? ', with a password' : ''}`);
+  // the zip is made one file at a time and goes straight out, so a big library never has to fit in memory
   try {
-    const te = new TextEncoder(), files = [];
-    for (const f of allFiles()){
+    if (lib.fs.backup){ toast('Making the backup…'); ready(await lib.fs.backup(name, what === 'all', pw || '')); return; }   // Android: the app zips from storage itself
+    const list = what === 'all' ? allFiles(await lib.fs.list(true)) : allFiles();
+    if (!list.length){ toast('This library has no notes yet'); return; }
+    const sink = await host.saveStream(name);
+    if (!sink) return;
+    toast('Making the backup…');
+    const te = new TextEncoder();
+    const files = list.map(f => ({ name: f.path, read: async () => {
       const t = tabs.find(t => t.cur.kind === 'lib' && t.cur.path === f.path);
-      files.push({ name: f.path, data: t ? te.encode(t.state.doc.toString()) : isNote(f.name) ? te.encode(await lib.fs.read(f.path)) : await lib.fs.readBin(f.path) });
-    }
-    if (!files.length){ toast('This library has no notes yet'); return; }
-    const zip = await makeZip(files, pw);
-    const name = `Markpad backup - ${lib.desc.name.replace(/[\\/:*?"<>|]/g, '-')} - ${today()}.zip`;
-    if (await host.shareFile(name, zip)) toast(`Backup ready: ${files.length} file${files.length > 1 ? 's' : ''}${pw ? ', with a password' : ''}`);
+      return t ? te.encode(t.state.doc.toString()) : isNote(f.name) ? te.encode(await lib.fs.read(f.path)) : lib.fs.readBin(f.path);
+    } }));
+    await makeZip(files, pw, sink.write);
+    if (await sink.done()) ready(files.length);
   } catch (e){ toast("Couldn't back up: " + (e.message || e)); }
 }
 async function restoreBackup(){
   if (!lib){ toggleSide(true); toast('Pick a library first'); return; }
+  const restored = async (dir, n) => {
+    expanded.add(dir); selectedFolder = dir;
+    await refreshTree();
+    toast(`Restored ${n} file${n > 1 ? 's' : ''} into “${dir}”`);
+  };
+  if (lib.fs.restore){   // Android: the app unzips straight into the library, file by file
+    let z;
+    try { z = await host.pickZip(); } catch (e){ toast("Couldn't open that file: " + (e.message || e)); return; }
+    if (!z) return;
+    const dir = await uniquePath('', 'Restored ' + today());
+    for (let pw = null; ;){
+      try { toast('Restoring…'); await restored(dir, await lib.fs.restore(z.uri, dir, pw || '')); return; }
+      catch (e){
+        if (e.message !== 'password'){ toast("Couldn't restore: " + e.message); await refreshTree(); return; }
+        pw = await askPassword(pw == null ? `“${z.name}” has a password` : 'Wrong password. Try again', 'Restore');
+        if (pw == null) return;
+      }
+    }
+  }
   let z;
   try { z = await host.openZip(); } catch (e){ toast("Couldn't open that file: " + (e.message || e)); return; }
   if (!z) return;
@@ -1061,17 +1096,15 @@ async function restoreBackup(){
       if (pw == null) return;
     }
   }
-  files = files.filter(f => SHOWN_FILE.test(f.name) && !f.name.split('/').some(p => p === '..' || p.startsWith('.')));
-  if (!files.length){ toast('No notes or pictures in that zip'); return; }
+  // everything comes back (full backups hold .obsidian and other files too), all of it inside the new "Restored" folder
+  files = files.filter(f => !f.name.endsWith('/') && !f.name.split('/').some(p => p === '..'));
+  if (!files.length){ toast('Nothing to restore in that zip'); return; }
   try {
     const dir = await uniquePath('', 'Restored ' + today());
     for (const f of files) await lib.fs.writeBin(normPath(joinPath(dir, f.name.replace(/^\/+/, ''))), f.data);
-    expanded.add(dir); selectedFolder = dir;
-    await refreshTree();
-    toast(`Restored ${files.length} file${files.length > 1 ? 's' : ''} into “${dir}”`);
+    await restored(dir, files.length);
   } catch (e){ toast("Couldn't restore: " + (e.message || e)); }
 }
-const SHOWN_FILE = /\.(md|markdown|mdown|mkd|txt|png|jpe?g|gif|webp|svg|bmp|avif)$/i;
 async function trashPath(p, isDir, sure){
   if (!sure && !(await confirmBox(`Move ${basename(p)}${isDir ? ' and everything in it' : ''} to the library's .trash folder?`, 'Move to trash'))) return;
   try {
@@ -1292,9 +1325,10 @@ function toggleSide(on = $('#side').hidden){
 function showTab(tab){
   for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
   $('#filesPane').hidden = tab !== 'files'; $('#olPane').hidden = tab !== 'outline'; $('#tagPane').hidden = tab !== 'tags';
-  $('#pubPane').hidden = tab !== 'published';
+  $('#pubPane').hidden = tab !== 'published'; $('#linkPane').hidden = tab !== 'links';
   store.set('tab', tab); buildOutline();
   if (tab === 'tags') buildTags(true);
+  if (tab === 'links') buildLinks(true);
   if (tab === 'published'){ jb.pages = null; $('#pubList').innerHTML = '<div class="empty">Reading notes…</div>'; jbRefreshList(true); }
 }
 /* Tags tab: every #tag in the library, most used first; click one to see its notes */
@@ -1320,14 +1354,60 @@ $('#tagList').addEventListener('click', e => {
   if (b.dataset.tag){ openTagName = openTagName === b.dataset.tag ? null : b.dataset.tag; buildTags(); }
   else { openLibFile(b.dataset.path, e.ctrlKey || e.metaKey).then(() => buildTags()); if (window.innerWidth <= 700) toggleSide(false); }
 });
-// Outline and Tags tabs can be hidden (Files always stays)
+/* Links tab: the notes that link to the open note ([[wiki links]] and [text](note.md)), with the line each link is on */
+const linksShown = () => !$('#linkPane').hidden && !$('#side').hidden;
+// the lines of a note that link to `me` (a link can only reach a note with the same file name, so check that first: big vaults stay quick)
+function linesLinkingTo(f, lines, me){
+  const base = basename(me).replace(/\.md$/i, '').toLowerCase(), out = [];
+  const sameName = t => basename(t.trim()).replace(/\.md$/i, '').toLowerCase() === base;
+  let fence = false;
+  lines.forEach((l, i) => {
+    if (FENCE_RE.test(l)){ fence = !fence; return; }
+    if (fence || (!l.toLowerCase().includes(base) && !l.includes('%'))) return;
+    for (const m of l.matchAll(/!?\[\[([^\]|#\n]+)/g)) if (sameName(m[1]) && resolveWiki(m[1]) === me){ out.push(i); return; }
+    for (const m of l.matchAll(/\]\(<?([^)>#]+?\.md)(?:#[^)]*)?>?\)/gi)){
+      if (/^[a-z]+:/i.test(m[1])) continue;
+      let t; try { t = decodeURIComponent(m[1]); } catch (_) { t = m[1]; }
+      if (sameName(t) && normPath(joinPath(dirname(f.path), t)) === me){ out.push(i); return; }
+    }
+  });
+  return out;
+}
+async function buildLinks(reread){
+  const box = $('#linkList');
+  if (!lib){ box.innerHTML = '<div class="empty">Open a library (Files tab) to see links between notes.</div>'; return; }
+  if (cur.kind !== 'lib'){ box.innerHTML = '<div class="empty">Open a note from the library to see which notes link to it.</div>'; return; }
+  if (reread){ if (!noteTexts.length) box.innerHTML = '<div class="empty">Reading notes…</div>'; await readNotes(); }
+  const me = cur.path, hits = [];
+  for (const { f, lines } of noteTexts){
+    if (f.path === me) continue;
+    const ls = linesLinkingTo(f, lines, me);
+    if (ls.length) hits.push({ f, ls, lines });
+  }
+  hits.sort((a, b) => a.f.name.localeCompare(b.f.name, undefined, { numeric: true, sensitivity: 'base' }));
+  const snip = l => esc(plain(l.replace(/^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+|#+\s+|>\s?)/, '')).slice(0, 160)) || '(link)';
+  box.innerHTML = hits.length
+    ? `<div class="lc">Linked from ${hits.length} note${hits.length === 1 ? '' : 's'}</div>` +
+      hits.map(h => `<button class="lh" data-path="${esc(h.f.path)}" data-line="${h.ls[0]}">${esc(h.f.name.replace(/\.md$/i, ''))}<small>${h.ls.length}</small></button>` +
+        h.ls.slice(0, 5).map(i => `<button class="ln" data-path="${esc(h.f.path)}" data-line="${i}">${snip(h.lines[i])}</button>`).join('')).join('')
+    : `<div class="empty">No notes link here yet. Type [[${esc(cur.name.replace(/\.md$/i, ''))}]] in another note to link to this one.</div>`;
+}
+$('#linkList').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-path]'); if (!b) return;
+  if (!(await flush())) return;
+  await openLibFile(b.dataset.path, e.ctrlKey || e.metaKey);
+  requestAnimationFrame(() => jumpToLine(+b.dataset.line));
+  if (window.innerWidth <= 700) toggleSide(false);
+});
+// Outline, Tags and Links tabs can be hidden (Files always stays)
+const TAB_SWITCH = { outline: '#bShowOutline', tags: '#bShowTags', links: '#bShowLinks' };
 function setTabShown(tab, on){
   document.querySelector(`.tabs [data-tab="${tab}"]`).hidden = !on;
   store.set('hide.' + tab, on ? '' : '1');
-  $(tab === 'outline' ? '#bShowOutline' : '#bShowTags').setAttribute('aria-pressed', String(on));
+  $(TAB_SWITCH[tab]).setAttribute('aria-pressed', String(on));
   if (!on && store.get('tab') === tab) showTab('files');
 }
-for (const [tab, id] of [['outline', '#bShowOutline'], ['tags', '#bShowTags']]){
+for (const [tab, id] of Object.entries(TAB_SWITCH)){
   $(id).addEventListener('click', () => setTabShown(tab, $(id).getAttribute('aria-pressed') !== 'true'));
 }
 $('#bSide').addEventListener('click', () => toggleSide());
@@ -1633,16 +1713,17 @@ function setView(v){
 document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
 function applyTheme(t){
   if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme;
-  host.bars?.(getComputedStyle(document.documentElement).colorScheme.includes('dark'));
+  const cs = getComputedStyle(document.documentElement);
+  host.bars?.(cs.colorScheme.includes('dark'), cs.getPropertyValue('--panel').trim());
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(store.get('theme')));
-// tap: light/dark. Hold it (or right-click) for the accent colors.
+// tap: light/dark. Hold it (or right-click) for the theme colors and accent.
 { let hold = 0, held = false;
   const bt = $('#bTheme');
-  bt.title = 'Light/dark (hold for accent colors)';
-  bt.addEventListener('pointerdown', () => { held = false; clearTimeout(hold); hold = setTimeout(() => { held = true; openAccent(); }, 500); });
+  bt.title = 'Light/dark (hold for theme colors)';
+  bt.addEventListener('pointerdown', () => { held = false; clearTimeout(hold); hold = setTimeout(() => { held = true; openThemes(); }, 500); });
   for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) bt.addEventListener(ev, () => clearTimeout(hold));
-  bt.addEventListener('contextmenu', e => { e.preventDefault(); if (!held) openAccent(); held = true; });
+  bt.addEventListener('contextmenu', e => { e.preventDefault(); if (!held) openThemes(); held = true; });
   bt.addEventListener('click', () => {
     if (held){ held = false; return; }
     const t = getComputedStyle(document.documentElement).colorScheme.includes('dark') ? 'light' : 'dark';
@@ -1802,6 +1883,7 @@ document.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (k === 'f' && e.shiftKey){ e.preventDefault(); setFocus(!document.body.classList.contains('focus')); }
   else if (k === 'f' || k === 'h'){ e.preventDefault(); openFind(k === 'h'); }
+  else if (k === 'd' && e.shiftKey){ e.preventDefault(); todayNote(); }
   else if (k === 'o' && e.shiftKey){ e.preventDefault(); if ($('#side').hidden || $('#olPane').hidden){ toggleSide(true); showTab('outline'); } else toggleSide(false); }
   else if (k === 'o'){ e.preventDefault(); openFile(); }
   else if (k === 'p' && e.shiftKey){ e.preventDefault(); openSearch(); }
@@ -2210,22 +2292,122 @@ $('#bPubSort').addEventListener('click', e => {
 });
 $('#bShowPub').addEventListener('click', () => { store.set('hide.published', store.get('hide.published') ? '' : '1'); jbRefresh(); });
 
-/* ---------------- Accent color (per device) ---------------- */
-const ACCENTS = [['Blue', ''], ['Purple', '#8b5cf6'], ['Pink', '#e0457b'], ['Red', '#d64545'], ['Orange', '#e8730c'], ['Gold', '#c99a06'], ['Green', '#2f9e5a'], ['Teal', '#14a3a3']];
+/* ---------------- Daily note & templates (like Obsidian's core plugins; reads their settings in a vault) ---------------- */
+const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+// the date words Obsidian uses (moment.js): YYYY-MM-DD, dddd D MMMM, HH:mm, [text in brackets] stays as it is
+function fmtDate(d, f){
+  const p2 = n => String(n).padStart(2, '0'), D = d.getDate();
+  const ord = n => n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th');
+  return f.replace(/\[([^\]]*)\]|YYYY|YY|MMMM|MMM|MM|M|Do|DD|D|dddd|ddd|HH|H|hh|h|mm|ss|A|a/g, (t, lit) => lit != null ? lit : ({
+    YYYY: d.getFullYear(), YY: p2(d.getFullYear() % 100), MMMM: MONTHS[d.getMonth()], MMM: MONTHS[d.getMonth()].slice(0, 3), MM: p2(d.getMonth() + 1), M: d.getMonth() + 1,
+    Do: ord(D), DD: p2(D), D, dddd: DAYS[d.getDay()], ddd: DAYS[d.getDay()].slice(0, 3), HH: p2(d.getHours()), H: d.getHours(),
+    hh: p2(d.getHours() % 12 || 12), h: d.getHours() % 12 || 12, mm: p2(d.getMinutes()), ss: p2(d.getSeconds()), A: d.getHours() < 12 ? 'AM' : 'PM', a: d.getHours() < 12 ? 'am' : 'pm',
+  })[t]);
+}
+// {{title}}, {{date}}, {{time}}, {{date:dddd D MMMM}} … like Obsidian's templates
+const fillTemplate = (t, title, d = new Date()) => t.replace(/\{\{\s*(title|date|time)\s*(?::([^}]*))?\}\}/gi, (_, k, f) => {
+  k = k.toLowerCase();
+  return k === 'title' ? title : fmtDate(d, f?.trim() || (k === 'date' ? 'YYYY-MM-DD' : 'HH:mm'));
+});
+const DAILY_DEFAULT = { folder: 'Daily', format: 'YYYY-MM-DD', template: '', templates: 'Templates' };
+async function dailyCfg(){
+  const saved = store.get('daily.' + lib.desc.id);
+  if (saved) return { ...DAILY_DEFAULT, ...JSON.parse(saved) };
+  // first time in a vault: start from Obsidian's own daily note and template settings
+  const cfg = { ...DAILY_DEFAULT };
+  const json = async p => { try { return JSON.parse(await lib.fs.read(p)); } catch (_) { return null; } };
+  const dn = await json('.obsidian/daily-notes.json'), tp = await json('.obsidian/templates.json');
+  if (dn){ cfg.folder = dn.folder ?? ''; if (dn.format) cfg.format = dn.format; if (dn.template) cfg.template = dn.template; }
+  if (tp?.folder) cfg.templates = tp.folder;
+  return cfg;
+}
+const cleanDir = d => normPath((d || '').trim());
+async function todayNote(){
+  if (!lib){ toggleSide(true); toast('Pick a library first'); return; }
+  const cfg = await dailyCfg(), now = new Date();
+  const name = fmtDate(now, cfg.format || 'YYYY-MM-DD').replace(/[\\:*?"<>|]/g, '-');
+  const path = normPath(joinPath(cleanDir(cfg.folder), name + '.md'));
+  const have = allFiles().find(f => f.path.toLowerCase() === path.toLowerCase());
+  if (!(await flush())) return;
+  if (have){ await openLibFile(have.path); return; }
+  let text = '';
+  if (cfg.template.trim()){
+    const tp = resolveWiki(cfg.template.trim());
+    if (tp) text = fillTemplate(await lib.fs.read(tp).catch(() => ''), basename(name), now);
+    else toast(`Daily template “${cfg.template}” not found, made an empty note`);
+  }
+  await lib.fs.write(path, text);
+  await refreshTree();
+  await openLibFile(path);
+}
+async function insertTemplate(){
+  if (!lib){ toggleSide(true); toast('Pick a library first'); return; }
+  const dir = cleanDir((await dailyCfg()).templates).toLowerCase();
+  const list = allFiles().filter(f => isNote(f.name) && (dir ? f.path.toLowerCase().startsWith(dir + '/') : true));
+  if (!list.length){ toast(`No templates yet: put notes in the “${dir || 'Templates'}” folder`); return; }
+  jbDialog('Insert template', list.map(f => `<button class="tpl" data-path="${esc(f.path)}">${esc(f.path.slice(dir ? dir.length + 1 : 0).replace(/\.md$/i, ''))}</button>`).join(''));
+  $('#jbBody').onclick = async e => {
+    const b = e.target.closest('.tpl'); if (!b) return;
+    $('#jbDlg').hidden = true;
+    let t = fillTemplate(await lib.fs.read(b.dataset.path).catch(() => ''), cur.name.replace(/\.md$/i, ''));
+    if (text().trim()) t = noFront(t);   // the note already has its own start, so the template's properties stay out
+    const sel = view.state.selection.main;
+    replaceRange(sel.from, sel.to, t, sel.from + t.length);
+  };
+}
+async function dailySettings(){
+  if (!lib){ toggleSide(true); toast('Pick a library first'); return; }
+  const c = await dailyCfg();
+  const fld = (id, label, v, ph) => `<label class="fld">${label}<input id="${id}" value="${esc(v)}" placeholder="${ph}" spellcheck="false"></label>`;
+  jbDialog('Daily note & templates', fld('dnFolder', 'Daily notes folder (empty = top of the library)', c.folder, 'Daily') +
+    fld('dnFormat', 'File name (YYYY year, MM month, DD day, dddd weekday, MMMM month name)', c.format, 'YYYY-MM-DD') +
+    fld('dnTemplate', 'Template for new daily notes (a note name, optional)', c.template, 'Templates/Daily') +
+    fld('dnTemplates', 'Templates folder', c.templates, 'Templates') +
+    `<div class="sub">In templates, {{title}}, {{date}} and {{time}} are filled in (also {{date:dddd D MMMM}}).</div>`, () => {
+      const v = id => $('#' + id).value.trim();
+      store.set('daily.' + lib.desc.id, JSON.stringify({ folder: v('dnFolder'), format: v('dnFormat') || 'YYYY-MM-DD', template: v('dnTemplate'), templates: v('dnTemplates') }));
+      $('#jbDlg').hidden = true; toast('Saved');
+    });
+}
+$('#bToday').addEventListener('click', closeMenu(todayNote));
+$('#bTemplate').addEventListener('click', closeMenu(insertTemplate));
+$('#bDailySet').addEventListener('click', closeMenu(dailySettings));
+
+/* ---------------- Theme: color (muted red, blue, green, yellow or plain grey), light/dark and accent, per device ---------------- */
+const PALETTES = [['Plain', '', '#8a8d93'], ['Red', 'red', '#a4463f'], ['Blue', 'blue', '#3d6a9e'], ['Green', 'green', '#4a7a51'], ['Yellow', 'yellow', '#93700f']];
+const MODES = [['Light', 'light'], ['Dark', 'dark'], ['Like the system', '']];
+const ACCENTS = [["Theme's own", ''], ['Purple', '#8b5cf6'], ['Pink', '#e0457b'], ['Red', '#d64545'], ['Orange', '#e8730c'], ['Gold', '#c99a06'], ['Green', '#2f9e5a'], ['Teal', '#14a3a3']];
+function setPalette(p){
+  if (p) document.documentElement.dataset.palette = p; else delete document.documentElement.dataset.palette;
+  store.set('palette', p || '');
+  applyTheme(store.get('theme'));
+}
 function setAccent(c){
   if (c) document.documentElement.style.setProperty('--accent', c); else document.documentElement.style.removeProperty('--accent');
   store.set('accent', c || '');
 }
+setPalette(store.get('palette') || '');
 setAccent(store.get('accent') || '');
-function openAccent(){
+function openThemes(){
   menu.open = false;
-  const now = store.get('accent') || '';
-  jbDialog('Accent color', `<div class="swatches">${ACCENTS.map(([n, c]) =>
-    `<button class="sw${c === now ? ' on' : ''}" data-c="${c}" title="${n}" style="--c:${c || '#3b6fd8'}"><span></span>${n}</button>`).join('')}
-    <label class="sw custom"><input type="color" id="accentPick" value="${now || '#3b6fd8'}"><span>Custom…</span></label></div>`);
-  $('#accentPick').addEventListener('input', e => setAccent(e.target.value));
+  const pal = store.get('palette') || '', mode = store.get('theme') || '', acc = store.get('accent') || '';
+  const sw = (kind, v, n, c, on) => `<button class="sw${on ? ' on' : ''}" data-${kind}="${v}" title="${n}" style="--c:${c}"><span></span>${n}</button>`;
+  jbDialog('Theme', `<div class="sub">Color</div><div class="swatches" data-group="palette">${PALETTES.map(([n, v, c]) => sw('palette', v, n, c, v === pal)).join('')}</div>
+    <div class="sub">Light or dark</div><div class="swatches" data-group="mode">${MODES.map(([n, v]) => sw('mode', v, n, v === 'dark' ? '#25262a' : v === 'light' ? '#f3f2ef' : 'linear-gradient(90deg,#f3f2ef 50%,#25262a 50%)', v === mode)).join('')}</div>
+    <div class="sub">Accent (links, buttons)</div><div class="swatches" data-group="accent">${ACCENTS.map(([n, c]) => sw('accent', c, n, c || 'var(--accent)', c === acc)).join('')}
+    <label class="sw custom"><input type="color" id="accentPick" value="${acc || '#3b6fd8'}"><span>Custom…</span></label></div>`);
+  $('#accentPick').addEventListener('input', e => { setAccent(e.target.value); $('#jbBody').querySelectorAll('[data-group="accent"] button.sw').forEach(b => b.classList.remove('on')); });
 }
-$('#jbBody').addEventListener('click', e => { const s = e.target.closest('button.sw'); if (s){ setAccent(s.dataset.c); $('#jbBody').querySelectorAll('button.sw').forEach(b => b.classList.toggle('on', b === s)); } });
+$('#jbBody').addEventListener('click', e => {
+  const s = e.target.closest('button.sw'); if (!s) return;
+  if (s.dataset.palette != null){ setPalette(s.dataset.palette); setAccent(''); $('#accentPick').value = '#3b6fd8'; }   // a new color brings its own accent
+  else if (s.dataset.mode != null){ applyTheme(s.dataset.mode); store.set('theme', s.dataset.mode); }
+  else if (s.dataset.accent != null) setAccent(s.dataset.accent);
+  else return;
+  s.parentElement.querySelectorAll('button.sw').forEach(b => b.classList.toggle('on', b === s));
+  if (s.dataset.palette != null) $('#jbBody').querySelectorAll('[data-accent]').forEach(b => b.classList.toggle('on', b.dataset.accent === ''));
+});
 
 /* ---------------- Narrow windows: the top bar and file tabs slide sideways ---------------- */
 for (const el of [document.querySelector('header'), $('#tabList')]){
@@ -2289,7 +2471,7 @@ if (host.onOpenFile) host.onOpenFile(async f => { await openInTab(f.text, { kind
   recent = (await kvGet('recent')) || []; showRecent();
   libs = (await kvGet('libs')) || [];
   const v = store.get('view'); setView(['live', 'editor', 'split', 'preview'].includes(v) ? v : 'live');
-  setTabShown('outline', !store.get('hide.outline')); setTabShown('tags', !store.get('hide.tags'));
+  for (const t of Object.keys(TAB_SWITCH)) setTabShown(t, !store.get('hide.' + t));
   jbRefresh(); if (jb.on && jb.key) jbCheckPro();
   showTab((t => t !== 'files' && (store.get('hide.' + t) || (t === 'published' && !jb.on)) ? 'files' : t)(store.get('tab') || 'files'));
   if (store.get('side') && window.innerWidth > 700) toggleSide(true);

@@ -30,6 +30,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.InputStream
+import java.io.OutputStream
+import java.io.RandomAccessFile
 import java.util.concurrent.Executors
 
 // Markpad on Android: the same index.html as every other edition, in a WebView, plus a small
@@ -128,12 +130,7 @@ class MainActivity : AppCompatActivity() {
                 "openZip" -> pick(id, Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE); type = "*/*"
                     putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
-                }) { d ->
-                    d.data?.let { u ->
-                        val bytes = contentResolver.openInputStream(u)!!.use { it.readBytes() }
-                        JSONObject().put("name", displayName(u)).put("data", Base64.encodeToString(bytes, Base64.NO_WRAP)).toString()
-                    }
-                }
+                }) { d -> d.data?.let { u -> JSONObject().put("name", displayName(u)).put("uri", u.toString()).toString() } }
                 "pickFolder" -> pick(id, Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)) { d ->
                     d.data?.let { u ->
                         contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
@@ -149,10 +146,11 @@ class MainActivity : AppCompatActivity() {
                         "startupFile" -> startUri?.let { u -> startUri = null; looseFile(u) }
                         "readUri" -> JSONObject.quote(readUri(Uri.parse(a.getString("uri"))))
                         "writeUri" -> { writeUri(Uri.parse(a.getString("uri")), a.getString("text")); null }
-                        "list" -> lib(a).list().toString()
+                        "list" -> lib(a).list(a.optBoolean("all")).toString()
                         "read" -> JSONObject.quote(lib(a).read(a.getString("path")))
                         "readB64" -> JSONObject.quote(lib(a).open(a.getString("path")).use { Base64.encodeToString(it.readBytes(), Base64.NO_WRAP) })
-                        "share" -> { share(a.getString("name"), Base64.decode(a.getString("data"), Base64.DEFAULT)); null }
+                        "backupZip" -> backupZip(a)
+                        "restoreZip" -> restoreZip(a)
                         "write" -> { lib(a).write(a.getString("path"), a.getString("text").toByteArray()); null }
                         "writeB64" -> { lib(a).write(a.getString("path"), Base64.decode(a.getString("data"), Base64.DEFAULT)); null }
                         "mkdir" -> { lib(a).dir(a.getString("path"), true); null }
@@ -161,7 +159,7 @@ class MainActivity : AppCompatActivity() {
                         "mtime" -> lib(a).mtime(a.getString("path")).toString()
                         "print" -> { runOnUiThread { print() }; null }
                         "openExternal" -> { openExternal(a.getString("url")); null }
-                        "bars" -> { runOnUiThread { bars(a.getBoolean("dark")) }; null }
+                        "bars" -> { runOnUiThread { bars(a.getBoolean("dark"), a.optString("color")) }; null }
                         else -> throw IllegalArgumentException("unknown call $method")
                     }
                 }
@@ -208,19 +206,67 @@ class MainActivity : AppCompatActivity() {
         contentResolver.openOutputStream(u, "wt")!!.use { it.write(text.toByteArray()) }
     }
 
-    // paint the strips behind the status and navigation bars like the page's own bars
-    private fun bars(dark: Boolean) {
-        frame.setBackgroundColor(Color.parseColor(if (dark) "#232428" else "#F3F2EF"))
+    // the strips behind the status and navigation bars take the theme's panel color
+    private fun bars(dark: Boolean, color: String) {
+        val c = try { Color.parseColor(color) } catch (e: Exception) { Color.parseColor(if (dark) "#232428" else "#F3F2EF") }
+        frame.setBackgroundColor(c)
         WindowInsetsControllerCompat(window, frame).apply {
             isAppearanceLightStatusBars = !dark
             isAppearanceLightNavigationBars = !dark
         }
     }
 
-    // a backup zip goes to Android's share menu (Drive, Gmail, Save to Files, …)
-    private fun share(name: String, bytes: ByteArray) {
+    /* ---------------- backups: BackupZip makes and unpacks them file by file, so the page never holds the zip ---------------- */
+    private fun progress(msg: String) = runOnUiThread {
+        web.evaluateJavascript("window.__mpProgress && window.__mpProgress(${JSONObject.quote(msg)})", null)
+    }
+    private fun pwOf(a: JSONObject) = if (a.isNull("password")) "" else a.optString("password")
+    private fun files(tree: JSONArray, out: MutableList<String> = ArrayList()): MutableList<String> {
+        for (i in 0 until tree.length()) {
+            val n = tree.getJSONObject(i)
+            if (n.getBoolean("dir")) files(n.getJSONArray("children"), out) else out.add(n.getString("path"))
+        }
+        return out
+    }
+    private fun backupZip(a: JSONObject): String {
+        val l = lib(a)
+        val paths = files(l.list(a.optBoolean("all")))
+        if (paths.isEmpty()) throw Exception("This library has no notes yet")
         val dir = File(cacheDir, "share").apply { deleteRecursively(); mkdirs() }
-        val f = File(dir, name.replace(Regex("[\\\\/:*?\"<>|]"), "-")).apply { writeBytes(bytes) }
+        if (dir.usableSpace < 20L shl 20) throw Exception("the phone is almost out of space")
+        val f = File(dir, a.getString("name").replace(Regex("[\\\\/:*?\"<>|]"), "-"))
+        try {
+            BackupZip.Writer(f, pwOf(a), File(cacheDir, "backup.part")).use { w ->
+                paths.forEachIndexed { i, p ->
+                    if (i % 50 == 0) progress("Backing up… $i of ${paths.size} files")
+                    l.open(p).use { w.add(p, it) }
+                }
+            }
+        } catch (e: Exception) { f.delete(); throw e }
+        share(f)
+        return paths.size.toString()
+    }
+    // unpacks into dir (a new "Restored …" folder); a wrong or missing password fails before anything is written
+    private fun restoreZip(a: JSONObject): String {
+        val l = lib(a); val dir = a.getString("dir"); val pw = pwOf(a)
+        val tmp = File(cacheDir, "restore.zip")
+        try {
+            contentResolver.openInputStream(Uri.parse(a.getString("uri")))!!.use { i -> tmp.outputStream().use { i.copyTo(it, 1 shl 16) } }
+            RandomAccessFile(tmp, "r").use { f ->
+                val list = BackupZip.entries(f).filter { e -> !e.name.endsWith("/") && e.name.split('/').none { it == ".." } }
+                if (list.isEmpty()) throw Exception("Nothing to restore in that zip")
+                BackupZip.checkPassword(f, list, pw)
+                list.forEachIndexed { i, e ->
+                    if (i % 50 == 0) progress("Restoring… $i of ${list.size} files")
+                    BackupZip.open(f, e, pw).use { src -> l.writeFrom("$dir/${e.name.trimStart('/')}") { out -> BackupZip.copy(src, out, e) } }
+                }
+                return list.size.toString()
+            }
+        } finally { tmp.delete() }
+    }
+
+    // a backup zip goes to Android's share menu (Drive, Gmail, Save to Files, …)
+    private fun share(f: File) {
         val uri = FileProvider.getUriForFile(this, "$packageName.files", f)
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "application/zip"; putExtra(Intent.EXTRA_STREAM, uri); putExtra(Intent.EXTRA_TITLE, f.name)
@@ -290,10 +336,14 @@ class MainActivity : AppCompatActivity() {
     /* ---------------- libraries ---------------- */
     private val shown = Regex("\\.(md|markdown|mdown|mkd|txt|png|jpe?g|gif|webp|svg|bmp|avif)$", RegexOption.IGNORE_CASE)
 
+    // a full backup also takes other files and hidden folders like .obsidian, but never the trash or git's folder
+    private fun skip(name: String, all: Boolean) = if (all) name == ".trash" || name == ".git" || name.endsWith(".markpad-tmp") else name.startsWith(".")
+
     interface Lib {
-        fun list(): JSONArray
+        fun list(all: Boolean = false): JSONArray
         fun read(path: String): String
         fun write(path: String, bytes: ByteArray)
+        fun writeFrom(path: String, fill: (OutputStream) -> Unit)   // big files (restores) without holding them in memory
         fun dir(path: String, create: Boolean)
         fun rename(from: String, to: String)
         fun trash(path: String)
@@ -314,23 +364,29 @@ class MainActivity : AppCompatActivity() {
     // "Markpad notes": a plain folder inside the app's own storage
     inner class FileLib(private val root: File) : Lib {
         private fun f(p: String) = parts(p).fold(root) { d, n -> File(d, n) }
-        private fun walk(d: File, pre: String): JSONArray {
+        private fun walk(d: File, pre: String, all: Boolean): JSONArray {
             val out = JSONArray()
-            val kids = (d.listFiles() ?: arrayOf()).filter { !it.name.startsWith(".") }
+            val kids = (d.listFiles() ?: arrayOf()).filter { !skip(it.name, all) }
                 .sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() }))
             for (k in kids) {
-                if (k.isDirectory) out.put(JSONObject().put("name", k.name).put("path", pre + k.name).put("dir", true).put("children", walk(k, pre + k.name + "/")))
-                else if (shown.containsMatchIn(k.name)) out.put(JSONObject().put("name", k.name).put("path", pre + k.name).put("dir", false))
+                if (k.isDirectory) out.put(JSONObject().put("name", k.name).put("path", pre + k.name).put("dir", true).put("children", walk(k, pre + k.name + "/", all)))
+                else if (all || shown.containsMatchIn(k.name)) out.put(JSONObject().put("name", k.name).put("path", pre + k.name).put("dir", false))
             }
             return out
         }
-        override fun list() = walk(root, "")
+        override fun list(all: Boolean) = walk(root, "", all)
         override fun read(path: String) = f(path).readText().removePrefix("﻿")
         override fun write(path: String, bytes: ByteArray) {
             val t = f(path); t.parentFile?.mkdirs()
             val tmp = File(t.parentFile, ".${t.name}.markpad-tmp")
             tmp.writeBytes(bytes)
             if (!tmp.renameTo(t)) { t.writeBytes(bytes); tmp.delete() }
+        }
+        override fun writeFrom(path: String, fill: (OutputStream) -> Unit) {
+            val t = f(path); t.parentFile?.mkdirs()
+            val tmp = File(t.parentFile, ".${t.name}.markpad-tmp")
+            try { tmp.outputStream().buffered().use(fill) } catch (e: Exception) { tmp.delete(); throw e }
+            if (!tmp.renameTo(t)) { t.delete(); if (!tmp.renameTo(t)) { tmp.delete(); throw Exception("couldn't save ${t.name}") } }
         }
         override fun dir(path: String, create: Boolean) { f(path).mkdirs() }
         override fun rename(from: String, to: String) {
@@ -409,19 +465,19 @@ class MainActivity : AppCompatActivity() {
             return DocumentsContract.getDocumentId(u).also { ids[path] = it }
         }
 
-        private fun walk(id: String, pre: String): JSONArray {
+        private fun walk(id: String, pre: String, all: Boolean): JSONArray {
             val out = JSONArray()
-            val ks = kids(id).filter { !it.name.startsWith(".") }
+            val ks = kids(id).filter { !skip(it.name, all) }
                 .sortedWith(compareBy<Kid>({ !it.dir }, { it.name.lowercase() }))
             for (k in ks) {
                 val p = pre + k.name
                 ids[p] = k.id
-                if (k.dir) out.put(JSONObject().put("name", k.name).put("path", p).put("dir", true).put("children", walk(k.id, "$p/")))
-                else if (shown.containsMatchIn(k.name)) out.put(JSONObject().put("name", k.name).put("path", p).put("dir", false))
+                if (k.dir) out.put(JSONObject().put("name", k.name).put("path", p).put("dir", true).put("children", walk(k.id, "$p/", all)))
+                else if (all || shown.containsMatchIn(k.name)) out.put(JSONObject().put("name", k.name).put("path", p).put("dir", false))
             }
             return out
         }
-        override fun list(): JSONArray { ids.clear(); return walk(rootId, "") }
+        override fun list(all: Boolean): JSONArray { ids.clear(); return walk(rootId, "", all) }
         override fun read(path: String) = readUri(uri(need(path)))
         override fun write(path: String, bytes: ByteArray) {
             val (d, n) = parentOf(path, true)
@@ -431,6 +487,14 @@ class MainActivity : AppCompatActivity() {
                 ?: DocumentsContract.createDocument(cr, uri(d), "application/octet-stream", n)?.also { ids[key] = DocumentsContract.getDocumentId(it) }
                 ?: throw Exception("couldn't create $n")
             cr.openOutputStream(u, "wt")!!.use { it.write(bytes) }
+        }
+        override fun writeFrom(path: String, fill: (OutputStream) -> Unit) {
+            val (d, n) = parentOf(path, true)
+            val key = parts(path).joinToString("/")
+            val u = idOf(path)?.let { uri(it) }
+                ?: DocumentsContract.createDocument(cr, uri(d), "application/octet-stream", n)?.also { ids[key] = DocumentsContract.getDocumentId(it) }
+                ?: throw Exception("couldn't create $n")
+            cr.openOutputStream(u, "wt")!!.buffered().use(fill)
         }
         override fun dir(path: String, create: Boolean) {
             var id = rootId; var pre = ""

@@ -5,11 +5,13 @@
 // content:// uri on Android). A library is a folder; inside it every path is relative and uses '/'.
 //
 // Library filesystem (host.lib(desc)):
-//   list() → [{name, path, dir, children?}]   read(p) → text   write(p, text)   writeBin(p, Uint8Array)
+//   list(all) → [{name, path, dir, children?}] (all: every file and hidden folders like .obsidian, for full backups)   read(p) → text   write(p, text)   writeBin(p, Uint8Array)
 //   mkdir(p)   rename(from, to)   trash(p) (moves into .trash/, like Obsidian)   mtime(p) → ms   url(p) → src for <img>
 //   readBin(p) → Uint8Array
 //
-// Backups: shareFile(name, bytes) hands a file to the share menu / a Save dialog; openZip() → { name, bytes }
+// Backups: saveStream(name) → { write(bytes), done() } or null (a Save dialog; the zip arrives in pieces);
+// openZip() → { name, bytes }. Android instead zips and unzips in the app itself (lib.backup / lib.restore,
+// pickZip() → { name, uri }), file by file, so a big library never has to fit in the phone's memory.
 // saveBytes(name, bytes, mime) saves any other made file (Word export) through a Save dialog
 //
 // JotBird: http({ url, method, headers, body | bodyB64 }) → { status, body, retryAfter }. Only the apps have it:
@@ -54,12 +56,12 @@ function browserHost(){
     }
     const split = p => { const i = p.lastIndexOf('/'); return [p.slice(0, i + 1), p.slice(i + 1)]; };
     const fileOf = async (p, create) => { const [d, n] = split(p); return (await dirOf(d, create)).getFileHandle(n, { create }); };
-    async function walk(d, pre){
+    async function walk(d, pre, all){
       const out = [];
       for await (const [name, h] of d.entries()){
-        if (name.startsWith('.')) continue;
-        if (h.kind === 'directory') out.push({ name, path: pre + name, dir: true, children: await walk(h, pre + name + '/') });
-        else if (SHOWN.test(name)) out.push({ name, path: pre + name, dir: false });
+        if (all ? name === '.trash' || name === '.git' : name.startsWith('.')) continue;
+        if (h.kind === 'directory') out.push({ name, path: pre + name, dir: true, children: await walk(h, pre + name + '/', all) });
+        else if (all || SHOWN.test(name)) out.push({ name, path: pre + name, dir: false });
       }
       return sortTree(out);
     }
@@ -75,7 +77,7 @@ function browserHost(){
     const remove = async p => { const [d, n] = split(p); await (await dirOf(d)).removeEntry(n, { recursive: true }); };
     const urls = {};
     return {
-      list: () => walk(root, ''),
+      list: all => walk(root, '', all),
       read: async p => (await (await fileOf(p)).getFile()).text(),
       readBin: async p => new Uint8Array(await (await (await fileOf(p)).getFile()).arrayBuffer()),
       write: async (p, t) => writeHandle(await fileOf(p, true), t),
@@ -129,7 +131,12 @@ function browserHost(){
     setTitle: t => { document.title = t; },
     onClose(){ /* beforeunload is wired up by the app */ },
     openExternal: url => window.open(url, '_blank', 'noopener'),
-    // phones get the share menu; computers get a normal download
+    // the browser keeps the pieces as a Blob (it can park those on disk), then: phones get the share menu,
+    // computers a normal download
+    saveStream(name){
+      const parts = [];
+      return { write: async b => { parts.push(b); }, done: () => this.shareFile(name, new Blob(parts)) };
+    },
     async shareFile(name, bytes){
       const file = new File([bytes], name, { type: 'application/zip' });
       if (navigator.canShare?.({ files: [file] }) && matchMedia('(pointer:coarse)').matches){
@@ -157,7 +164,7 @@ function desktopHost(){
   function lib(desc){
     const root = desc.path;
     return {
-      list: () => invoke('list_tree', { root }),
+      list: all => invoke('list_tree', { root, all: !!all }),
       read: path => invoke('read_text', { root, path }),
       readBin: async path => unb64(await invoke('read_b64', { path: root.replace(/[\\/]$/, '') + '/' + path })),
       write: (path, text) => invoke('write_text', { root, path, text }),
@@ -228,10 +235,11 @@ function desktopHost(){
         if (t === 'drop') fn(e.payload.paths);
       });
     },
-    async shareFile(n, bytes){
+    async saveStream(n){
       const p = await dialog.save({ defaultPath: n, filters: [{ name: 'Zip', extensions: ['zip'] }] });
-      if (p) await invoke('write_b64', { root: '', path: p, data: b64(bytes) });
-      return !!p;
+      if (!p) return null;
+      let first = true;
+      return { write: async bytes => { await invoke('append_b64', { path: p, data: b64(bytes), first }); first = false; }, done: async () => true };
     },
     async openZip(){
       const p = await dialog.open({ multiple: false, directory: false, filters: [{ name: 'Zip', extensions: ['zip'] }] });
@@ -262,7 +270,7 @@ function androidHost(){
   function lib(desc){
     const root = desc.uri;
     return {
-      list: () => call('list', { root }),
+      list: all => call('list', { root, all: !!all }),
       read: path => call('read', { root, path }),
       readBin: async path => unb64(await call('readB64', { root, path })),
       write: (path, text) => call('write', { root, path, text }),
@@ -272,6 +280,8 @@ function androidHost(){
       trash: path => call('trash', { root, path }),
       mtime: path => call('mtime', { root, path }),
       url: async path => 'https://appassets.androidplatform.net/lib/?root=' + encodeURIComponent(root) + '&path=' + encodeURIComponent(path),
+      backup: (name, all, password) => call('backupZip', { root, name, all, password }),
+      restore: (uri, dir, password) => call('restoreZip', { root, uri, dir, password }),
     };
   }
   return {
@@ -294,9 +304,8 @@ function androidHost(){
     onClose(){},
     openExternal: url => call('openExternal', { url }),
     http: req => call('http', req),
-    bars: dark => call('bars', { dark }),
-    shareFile: async (name, bytes) => { await call('share', { name, data: b64(bytes) }); return true; },
-    async openZip(){ const r = await call('openZip'); return r && { name: r.name, bytes: unb64(r.data) }; },
+    bars: (dark, color) => call('bars', { dark, color }),
+    pickZip: () => call('openZip'),
     onOpenFile(fn){ window.__mpOpenFile = r => fn({ name: r.name, ref: r.uri, text: r.text }); },
   };
 }

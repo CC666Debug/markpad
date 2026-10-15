@@ -54,11 +54,15 @@ function aesBlock(k, inp, out){
     const t = a; a = b; b = c; c = d; d = t;
   }
 }
-// WinZip AES counter mode: a little-endian block counter starting at 1 (same both ways)
-function aesCtr(key, data){
+// WinZip AES counter mode: a little-endian block counter starting at 1 (same both ways).
+// legacy: Markpad 2.1.9–2.7.0 never carried the counter past its first byte (++ on a Uint8Array gives 256, not 0),
+// so after 4 KB its zips only opened in Markpad. Those zips say "made by 5.1" and are read the old way.
+const MADE_BY = 63;   // 6.3 (like 7-Zip): tells fixed zips apart from the old ones
+function aesCtr(key, data, legacy){
   const k = aesKey(key), out = new Uint8Array(data.length), ctr = new Uint8Array(16), ks = new Uint8Array(16);
   for (let pos = 0; pos < data.length; pos += 16){
-    for (let i = 0; i < 16 && ++ctr[i] === 0; i++);
+    if (legacy) ctr[0]++;
+    else for (let i = 0; i < 16 && (ctr[i] = ctr[i] + 1 & 255) === 0; i++);
     aesBlock(k, ctr, ks);
     for (let i = 0; i < 16 && pos + i < data.length; i++) out[pos + i] = data[pos + i] ^ ks[i];
   }
@@ -75,19 +79,25 @@ async function aesKeys(password, salt, keyLen){
 const hmac10 = async (key, data) => new Uint8Array(await crypto.subtle.sign('HMAC', key, data)).slice(0, 10);
 
 /* ---------------- Writing ---------------- */
-// files: [{ name: 'folder/note.md', data: Uint8Array }]; password '' or null = no password
-export async function makeZip(files, password){
+// files: [{ name: 'folder/note.md', data: Uint8Array }] or { name, read: async () => Uint8Array } (read when its turn comes);
+// password '' or null = no password. With write(bytes), the zip goes out one file at a time (backups: a big
+// library never sits in memory whole) and the number of files comes back; without it, the zip comes back.
+const cat = arrs => { const out = new Uint8Array(arrs.reduce((n, a) => n + a.length, 0)); let o = 0; for (const a of arrs){ out.set(a, o); o += a.length; } return out; };
+export async function makeZip(files, password, write){
   const parts = [], central = [];
+  const put = write || (async b => { parts.push(b); });
   let offset = 0;
   const now = new Date();
   const time = now.getHours() << 11 | now.getMinutes() << 5 | now.getSeconds() >> 1;
   const date = (now.getFullYear() - 1980) << 9 | (now.getMonth() + 1) << 5 | now.getDate();
+  if (files.length > 65534) throw new Error('more than 65,534 files: too many for one zip');
   for (const f of files){
-    const name = te.encode(f.name), crc = crc32(f.data);
-    let body = f.data, method = 0;
-    if (DEFLATE && f.data.length > 64){
-      const z = await pipe(f.data, new CompressionStream('deflate-raw'));
-      if (z.length < f.data.length){ body = z; method = 8; }
+    const data = f.data || await f.read();
+    const name = te.encode(f.name), crc = crc32(data);
+    let body = data, method = 0;
+    if (DEFLATE && data.length > 64){
+      const z = await pipe(data, new CompressionStream('deflate-raw'));
+      if (z.length < data.length){ body = z; method = 8; }
     }
     let extra = new Uint8Array(0), flags = 0x800, ver = 20, crcField = crc;
     if (password){
@@ -103,21 +113,23 @@ export async function makeZip(files, password){
       const h = new DataView(new ArrayBuffer(central ? 46 : 30));
       let o = 0;
       const u32 = v => { h.setUint32(o, v, true); o += 4; }, u16 = v => { h.setUint16(o, v, true); o += 2; };
-      u32(sig); if (central) u16(ver); u16(ver); u16(flags); u16(method); u16(time); u16(date);
-      u32(crcField); u32(body.length); u32(f.data.length); u16(name.length); u16(extra.length);
+      u32(sig); if (central) u16(password ? MADE_BY : ver); u16(ver); u16(flags); u16(method); u16(time); u16(date);
+      u32(crcField); u32(body.length); u32(data.length); u16(name.length); u16(extra.length);
       if (central){ u16(0); u16(0); u16(0); u32(0); u32(offset); }
       return new Uint8Array(h.buffer);
     };
     const local = head(0x04034b50, false);
+    if (offset + local.length + name.length + extra.length + body.length > 0xFFFFFFFF) throw new Error('over 4 GB: too big for one zip');
     central.push(head(0x02014b50, true), name, extra);
-    parts.push(local, name, extra, body);
+    await put(cat([local, name, extra, body]));
     offset += local.length + name.length + extra.length + body.length;
   }
   const cdSize = central.reduce((n, p) => n + p.length, 0);
   const end = new DataView(new ArrayBuffer(22));
   end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
   end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
-  return new Uint8Array(await new Blob([...parts, ...central, end.buffer]).arrayBuffer());
+  await put(cat([...central, new Uint8Array(end.buffer)]));
+  return write ? files.length : new Uint8Array(await new Blob(parts).arrayBuffer());
 }
 
 /* ---------------- Reading ---------------- */
@@ -132,7 +144,7 @@ export async function readZip(bytes, password){
   const out = [];
   for (let n = 0; n < count; n++){
     if (v.getUint32(p, true) !== 0x02014b50) throw new Error('the zip is damaged');
-    const flags = v.getUint16(p + 8, true), csize = v.getUint32(p + 20, true);
+    const flags = v.getUint16(p + 8, true), csize = v.getUint32(p + 20, true), madeBy = v.getUint8(p + 4);
     const nl = v.getUint16(p + 28, true), xl = v.getUint16(p + 30, true), cl = v.getUint16(p + 32, true), lo = v.getUint32(p + 42, true);
     let method = v.getUint16(p + 10, true), crc = v.getUint32(p + 16, true), strength = 0;
     const name = td.decode(bytes.subarray(p + 46, p + 46 + nl));
@@ -153,7 +165,7 @@ export async function readZip(bytes, password){
       if (data[sl] !== k.check[0] || data[sl + 1] !== k.check[1]) throw new Error('password');
       const ct = data.subarray(sl + 2, data.length - 10), mac = await hmac10(k.mac, ct);
       if (mac.some((b, i) => b !== data[data.length - 10 + i])) throw new Error(name + ' is damaged');
-      data = aesCtr(k.enc, ct);
+      data = aesCtr(k.enc, ct, madeBy === 51);
     }
     if (method === 8){
       if (!DEFLATE) throw new Error("this device can't unpack compressed zips");

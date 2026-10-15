@@ -39,23 +39,25 @@ fn resolve(root: &str, rel: &str) -> Result<PathBuf, String> {
     Ok(p)
 }
 
-fn walk(dir: &Path, prefix: &str, depth: u32) -> Vec<Entry> {
+// `all` (full backups) also takes other files and hidden folders like .obsidian, but never the trash or git's folder
+fn walk(dir: &Path, prefix: &str, depth: u32, all: bool) -> Vec<Entry> {
     let mut out = Vec::new();
     let Ok(rd) = fs::read_dir(dir) else { return out };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') {
+        let skip = if all { name == ".trash" || name == ".git" || name.ends_with(".markpad-tmp") } else { name.starts_with('.') };
+        if skip {
             continue;
         }
         let path = format!("{prefix}{name}");
         if e.path().is_dir() {
             if depth < 32 {
-                let children = walk(&e.path(), &format!("{path}/"), depth + 1);
+                let children = walk(&e.path(), &format!("{path}/"), depth + 1, all);
                 out.push(Entry { name, path, dir: true, children: Some(children) });
             }
         } else {
             let ext = Path::new(&name).extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
-            if SHOWN.contains(&ext.as_str()) {
+            if all || SHOWN.contains(&ext.as_str()) {
                 out.push(Entry { name, path, dir: false, children: None });
             }
         }
@@ -84,12 +86,12 @@ fn write_atomic(p: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_tree(root: String) -> Result<Vec<Entry>, String> {
+fn list_tree(root: String, all: Option<bool>) -> Result<Vec<Entry>, String> {
     let p = PathBuf::from(&root);
     if !p.is_dir() {
         return Err(format!("{root} is not a folder"));
     }
-    Ok(walk(&p, "", 0))
+    Ok(walk(&p, "", 0, all.unwrap_or(false)))
 }
 
 #[tauri::command]
@@ -113,6 +115,19 @@ fn write_text(root: String, path: String, text: String) -> Result<(), String> {
 fn write_b64(root: String, path: String, data: String) -> Result<(), String> {
     let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(err)?;
     write_atomic(&resolve(&root, &path)?, &bytes)
+}
+
+// Backups arrive in pieces (one per file), so a big library never crosses over in one go.
+#[tauri::command]
+fn append_b64(path: String, data: String, first: bool) -> Result<(), String> {
+    use std::io::Write;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(err)?;
+    let mut f = if first {
+        fs::File::create(&path).map_err(err)?
+    } else {
+        fs::OpenOptions::new().append(true).open(&path).map_err(err)?
+    };
+    f.write_all(&bytes).map_err(err)
 }
 
 #[tauri::command]
@@ -243,7 +258,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            list_tree, read_text, read_b64, write_text, write_b64, make_dir, rename_path, trash_path, mtime,
+            list_tree, read_text, read_b64, write_text, write_b64, append_b64, make_dir, rename_path, trash_path, mtime,
             portable_dir, startup_file, open_external, http
         ])
         .setup(|app| {
