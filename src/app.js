@@ -10,7 +10,7 @@ import { toPlain, toEpub, copyRich, noFront } from './export.js';
 import { host } from './host.js';
 import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.9.1';
+const VERSION = '2.9.2';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -1373,22 +1373,33 @@ $('#olList').addEventListener('click', e => {
   jumpToLine(heads[+b.dataset.k].line);
   if (window.innerWidth <= 700) toggleSide(false);
 });
-// drag the sidebar's right edge to resize it
+// drag the sidebar's right edge to resize it. Wide windows: the sidebar sits beside the note (flex-basis);
+// narrow ones (a phone held upright): it floats over the note (width), remembered separately
 const side = $('#side'), grip = $('#sideGrip');
+const narrow = () => window.innerWidth <= 700;
 const setSideW = w => { side.style.flexBasis = Math.min(Math.max(w, 160), Math.min(700, innerWidth - 300)) + 'px'; };
+const setSideNarrowW = w => { side.style.width = Math.min(Math.max(w, 180), innerWidth - 24) + 'px'; };
 if (store.get('sidew')) setSideW(+store.get('sidew'));
+if (store.get('sidew.narrow') && narrow()) setSideNarrowW(+store.get('sidew.narrow'));
 grip.addEventListener('pointerdown', e => {
-  if (window.innerWidth <= 700) return;
   e.preventDefault(); grip.setPointerCapture(e.pointerId); grip.classList.add('drag');
-  const left = side.getBoundingClientRect().left;
-  const move = ev => setSideW(ev.clientX - left);
+  const left = side.getBoundingClientRect().left, n = narrow();
+  const move = ev => n ? setSideNarrowW(ev.clientX - left) : setSideW(ev.clientX - left);
   grip.addEventListener('pointermove', move);
-  grip.addEventListener('pointerup', () => {
+  const up = () => {
     grip.classList.remove('drag'); grip.removeEventListener('pointermove', move);
-    store.set('sidew', parseInt(side.style.flexBasis));
-  }, { once: true });
+    n ? store.set('sidew.narrow', parseInt(side.style.width)) : store.set('sidew', parseInt(side.style.flexBasis));
+  };
+  grip.addEventListener('pointerup', up, { once: true });
+  grip.addEventListener('pointercancel', up, { once: true });
 });
-grip.addEventListener('dblclick', () => { side.style.flexBasis = ''; store.set('sidew', ''); });
+grip.addEventListener('dblclick', () => {
+  if (narrow()){ side.style.width = ''; store.set('sidew.narrow', ''); } else { side.style.flexBasis = ''; store.set('sidew', ''); }
+});
+// turning the phone: the floating width only applies upright
+matchMedia('(max-width: 700px)').addEventListener('change', m => {
+  if (m.matches && store.get('sidew.narrow')) setSideNarrowW(+store.get('sidew.narrow')); else if (!m.matches) side.style.width = '';
+});
 function toggleSide(on = $('#side').hidden){
   $('#side').hidden = !on; $('#bSide').setAttribute('aria-pressed', String(on));
   if (window.innerWidth > 700) store.set('side', on ? '1' : '');
@@ -1524,7 +1535,7 @@ $('#bSide').addEventListener('click', () => toggleSide());
 { let x0 = 0, y0 = 0, t0 = 0, on = false;
   const slides = el => { for (let e = el; e && e !== document.body; e = e.parentElement) if (e.scrollWidth > e.clientWidth + 2 && getComputedStyle(e).overflowX !== 'hidden' && getComputedStyle(e).overflowX !== 'visible') return true; return false; };
   document.addEventListener('touchstart', e => {
-    on = e.touches.length === 1 && !e.target.closest('header, .modal, #ctx, #ctxSub, .menu-list, input, textarea') && !slides(e.target);
+    on = e.touches.length === 1 && !e.target.closest('header, .modal, #ctx, #ctxSub, .menu-list, input, textarea, #sideGrip, #divider') && !slides(e.target);
     if (!on) return;
     x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
   }, { passive: true });
