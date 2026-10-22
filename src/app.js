@@ -10,7 +10,7 @@ import { toPlain, toEpub, copyRich, noFront } from './export.js';
 import { host } from './host.js';
 import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.9.2';
+const VERSION = '2.9.3';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -302,6 +302,7 @@ function render(){
   buildOutline();
   if (linksShown()) linksSoon();
   if (scrollSrc === 'ed') syncScroll('ed');
+  railsSoon();
 }
 function scheduleRender(){
   clearTimeout(renderTimer);
@@ -619,24 +620,46 @@ function selectedDir(){ return selectedFolder || (cur.kind === 'lib' ? dirname(c
 async function openLibrary(desc, quiet){
   if (!(await host.ready(desc, true))) { toast('Markpad needs permission to use ' + desc.name); renderLibEmpty(desc); return false; }
   if (lib && lib.desc.id !== desc.id) await detachLibTabs();
+  if (!lib || lib.desc.id !== desc.id) tree = [];
   lib = { desc, fs: host.lib(desc) };
   expanded = new Set(JSON.parse(store.get('open.' + desc.id) || '[]'));
   libs = [desc, ...libs.filter(l => l.id !== desc.id && !(desc.portable && l.portable))].slice(0, 6);
   kvSet('libs', libs); store.set('lib', desc.id);
   $('#libName').textContent = desc.name; $('#libName').title = desc.path || desc.uri || desc.name;
-  await refreshTree();
+  await refreshTree(true);
   if (!quiet) toast('Library: ' + desc.name);
   return true;
 }
-async function refreshTree(){
+/* A big vault takes a while to read on phones, so each library's file list is remembered (IndexedDB 'tree.<id>'):
+   it shows straight away and the fresh list replaces it when it's ready. `fast` (opening a library) doesn't wait
+   for the fresh list when a remembered one is showing. */
+let treeGen = 0, loadInfo = null;
+async function refreshTree(fast){
   if (!lib) return renderLibEmpty();
-  // a big vault takes a moment on phones: say so instead of showing an empty list
-  if (!tree.length){ renderLibEmpty(); $('#tree').innerHTML = '<div class="empty">Reading the library…</div>'; }
-  try { tree = await lib.fs.list(); await loadMtimes(); }
-  catch (e){ tree = []; toast("Couldn't read the library: " + (e.message || e)); }
-  renderTree();
-  if (!$('#tagPane').hidden) buildTags(true);
-  if (!$('#linkPane').hidden) buildLinks(true);
+  const gen = ++treeGen, d = lib.desc, t0 = performance.now();
+  let shown = false;
+  if (!tree.length){
+    const saved = await kvGet('tree.' + d.id);
+    if (gen !== treeGen) return;
+    if (saved?.length){ tree = saved; await loadMtimes(); renderTree(); shown = true; }
+    else { renderLibEmpty(); $('#tree').innerHTML = '<div class="empty">Reading the library…</div>'; }
+  }
+  const fresh = (async () => {
+    let list;
+    try { list = await lib.fs.list(); }
+    catch (e){
+      if (gen !== treeGen) return;
+      if (!shown) tree = [];
+      toast("Couldn't read the library: " + (e.message || e)); renderTree(); return;
+    }
+    if (gen !== treeGen || lib?.desc.id !== d.id) return;
+    tree = list; kvSet('tree.' + d.id, list);
+    loadInfo = { files: allFiles().length, s: (performance.now() - t0) / 1000 }; showAbout();
+    await loadMtimes(); renderTree();
+    if (paneShown('tagPane')) buildTags(true);
+    if (paneShown('linkPane')) buildLinks(true);
+  })();
+  if (!(fast && shown)) await fresh;
 }
 function renderLibEmpty(needs){
   $('#libHead').hidden = !lib; $('#tree').hidden = !lib;
@@ -688,7 +711,7 @@ function sortedList(list){
 }
 async function loadMtimes(){
   if (!lib || !sortMode.startsWith('mod')) return;
-  const files = allFiles(), ts = await Promise.all(files.map(f => lib.fs.mtime(f.path).catch(() => 0)));
+  const files = allFiles(), ts = await Promise.all(files.map(f => f.mtime ?? lib.fs.mtime(f.path).catch(() => 0)));
   mtimes = new Map(files.map((f, i) => [f.path, ts[i]]));
 }
 $('#bSort').addEventListener('click', e => {
@@ -1404,15 +1427,23 @@ function toggleSide(on = $('#side').hidden){
   $('#side').hidden = !on; $('#bSide').setAttribute('aria-pressed', String(on));
   if (window.innerWidth > 700) store.set('side', on ? '1' : '');
   buildOutline();
+  if (on) showPane(!noteTexts.length);
+  railsSoon();
+}
+// a sidebar pane that's actually on screen
+const paneShown = id => !$('#' + id).hidden && !$('#side').hidden;
+// Tags, Links and Published read every note in the library, so they only fill in while they're on screen
+function showPane(reread){
+  if (paneShown('tagPane')) buildTags(reread);
+  if (paneShown('linkPane')) buildLinks(reread);
+  if (paneShown('pubPane')){ if (reread){ jb.pages = null; $('#pubList').innerHTML = '<div class="empty">Reading notes…</div>'; } jbRefreshList(reread); }
 }
 function showTab(tab){
   for (const b of document.querySelectorAll('.tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
   $('#filesPane').hidden = tab !== 'files'; $('#olPane').hidden = tab !== 'outline'; $('#tagPane').hidden = tab !== 'tags';
   $('#pubPane').hidden = tab !== 'published'; $('#linkPane').hidden = tab !== 'links';
   store.set('tab', tab); buildOutline();
-  if (tab === 'tags') buildTags(true);
-  if (tab === 'links') buildLinks(true);
-  if (tab === 'published'){ jb.pages = null; $('#pubList').innerHTML = '<div class="empty">Reading notes…</div>'; jbRefreshList(true); }
+  showPane(true);
 }
 /* Tags tab: every #tag in the library, most used first; click one to see its notes */
 let openTagName = null;
@@ -1438,7 +1469,7 @@ $('#tagList').addEventListener('click', e => {
   else { openLibFile(b.dataset.path, e.ctrlKey || e.metaKey).then(() => buildTags()); if (window.innerWidth <= 700) toggleSide(false); }
 });
 /* Links tab: the notes that link to the open note ([[wiki links]] and [text](note.md)), with the line each link is on */
-function linksShown(){ return !$('#linkPane').hidden && !$('#side').hidden; }
+function linksShown(){ return paneShown('linkPane'); }
 // every link inside the open note: [[notes]], [text](note.md or a web address) and bare web addresses, each once
 function linksOut(t){
   const out = [], seen = new Set(), add = (key, o) => { if (!seen.has(key)){ seen.add(key); out.push(o); } };
@@ -1535,7 +1566,7 @@ $('#bSide').addEventListener('click', () => toggleSide());
 { let x0 = 0, y0 = 0, t0 = 0, on = false;
   const slides = el => { for (let e = el; e && e !== document.body; e = e.parentElement) if (e.scrollWidth > e.clientWidth + 2 && getComputedStyle(e).overflowX !== 'hidden' && getComputedStyle(e).overflowX !== 'visible') return true; return false; };
   document.addEventListener('touchstart', e => {
-    on = e.touches.length === 1 && !e.target.closest('header, .modal, #ctx, #ctxSub, .menu-list, input, textarea, #sideGrip, #divider') && !slides(e.target);
+    on = e.touches.length === 1 && !e.target.closest('header, .modal, #ctx, #ctxSub, .menu-list, input, textarea, #sideGrip, #divider, .rail') && !slides(e.target);
     if (!on) return;
     x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now();
   }, { passive: true });
@@ -1551,6 +1582,82 @@ $('#bSide').addEventListener('click', () => toggleSide());
   }, { passive: true });
 }
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+
+/* ---------------- Phone scrollbar ----------------
+   Android draws no scrollbar for the editor or the Read view, so phones and tablets get one of their own on the
+   right edge: a thumb to drag (a bubble names the heading you're at) and a short line for every heading (longer
+   for bigger headings; tap one to jump to it). Computers keep their normal scrollbar. */
+// var, not const: render() may ask for railsSoon() before this part of the file has run
+var railsOn = host.kind === 'android' || matchMedia('(pointer: coarse)').matches, rails = [], railTimer = 0;
+function makeRail(sc, marks){
+  const r = document.createElement('div');
+  r.className = 'rail'; r.hidden = true;
+  r.innerHTML = '<div class="ticks"></div><div class="thumb"></div><div class="bubble" hidden></div>';
+  document.body.append(r);
+  const ticks = r.firstChild, thumb = ticks.nextSibling, bubble = thumb.nextSibling;
+  const R = { r, sc, marks, H: 0, h: 0, fade: 0, ms: [] };
+  const max = () => Math.max(1, sc.scrollHeight - sc.clientHeight);
+  // the thumb's middle sits on a heading's line when that heading is at the top of the page
+  const yOf = top => (R.H - R.h) * Math.min(Math.max(top, 0), max()) / max() + R.h / 2;
+  const near = top => { let m = null; for (const x of R.ms) if (x.y <= top + 24) m = x; return m; };
+  // the editor only guesses the height of lines it hasn't drawn yet, so look again once it has
+  const jump = k => {
+    sc.scrollTop = R.ms[k].y - 8;
+    let n = 0;
+    const again = () => { const m = marks()[k]; if (m && Math.abs(sc.scrollTop - (m.y - 8)) > 2) sc.scrollTop = m.y - 8; if (++n < 3) setTimeout(again, 60); };
+    setTimeout(again, 60);
+  };
+  R.place = () => {
+    const b = sc.getBoundingClientRect();
+    if (!b.width || !b.height || sc.scrollHeight <= sc.clientHeight + 4 || document.body.classList.contains('focus') && sc === pv){ r.hidden = true; return; }
+    r.hidden = false;
+    r.style.top = b.top + 4 + 'px'; r.style.height = b.height - 8 + 'px'; r.style.left = b.right - 30 + 'px';
+    R.H = b.height - 8; R.h = Math.max(40, R.H * sc.clientHeight / sc.scrollHeight);
+    R.ms = marks();
+    ticks.innerHTML = R.ms.map(m => `<i class="h${Math.min(m.n, 3)}" style="top:${yOf(m.y - 8).toFixed(1)}px"></i>`).join('');
+    R.move();
+  };
+  R.move = () => {
+    if (r.hidden) return;
+    thumb.style.height = R.h + 'px';
+    thumb.style.top = (R.H - R.h) * sc.scrollTop / max() + 'px';
+    r.classList.add('on'); clearTimeout(R.fade);
+    R.fade = setTimeout(() => { if (!r.classList.contains('drag')) r.classList.remove('on'); }, 1500);
+  };
+  const say = () => {
+    const m = near(sc.scrollTop);
+    bubble.hidden = !m;
+    if (m){ bubble.textContent = m.t || '(empty heading)'; bubble.style.top = (R.H - R.h) * sc.scrollTop / max() + R.h / 2 + 'px'; }
+  };
+  let grab = -1, y0 = 0, moved = false;
+  r.addEventListener('pointerdown', e => {
+    e.preventDefault(); e.stopPropagation();
+    const top = r.getBoundingClientRect().top, y = e.clientY - top, tTop = parseFloat(thumb.style.top) || 0;
+    y0 = e.clientY; moved = false;
+    if (y >= tTop - 8 && y <= tTop + R.h + 8) grab = y - tTop;
+    else {
+      // a tap near a heading's line goes to that heading; anywhere else on the bar jumps there
+      let best = -1, d = 18;
+      R.ms.forEach((m, k) => { const dy = Math.abs(yOf(m.y - 8) - y); if (dy < d){ d = dy; best = k; } });
+      if (best >= 0){ jump(best); grab = -1; R.move(); return; }
+      grab = R.h / 2;
+      sc.scrollTop = (y - grab) / Math.max(1, R.H - R.h) * max();
+    }
+    r.setPointerCapture(e.pointerId); r.classList.add('drag', 'on'); say();
+  });
+  r.addEventListener('pointermove', e => {
+    if (grab < 0) return;
+    if (Math.abs(e.clientY - y0) > 3) moved = true;
+    const y = e.clientY - r.getBoundingClientRect().top - grab;
+    sc.scrollTop = Math.min(Math.max(y, 0), R.H - R.h) / Math.max(1, R.H - R.h) * max();
+    say();
+  });
+  const end = () => { if (grab < 0) return; grab = -1; r.classList.remove('drag'); bubble.hidden = true; R.move(); };
+  r.addEventListener('pointerup', end); r.addEventListener('pointercancel', end);
+  sc.addEventListener('scroll', () => { if (r.hidden) R.place(); else R.move(); }, { passive: true });
+  rails.push(R);
+}
+function railsSoon(){ if (rails?.length){ clearTimeout(railTimer); railTimer = setTimeout(() => rails.forEach(R => R.place()), 120); } }
 
 /* ---------------- Scroll sync (Split view) ---------------- */
 let scrollSrc = 'ed', syncing = null;
@@ -1953,6 +2060,7 @@ div.addEventListener('dblclick', () => { pane.style.flexBasis = '50%'; store.set
 
 function setFocus(on){
   document.body.classList.toggle('focus', on);
+  railsSoon();
   if (on){
     toast('Focus mode · Esc to leave');
     if (host.kind === 'browser') document.documentElement.requestFullscreen?.().catch(() => {});
@@ -2059,7 +2167,11 @@ $('#tree').addEventListener('auxclick', e => {
   const b = e.target.closest('.row');
   if (b && e.button === 1 && !b.dataset.dir){ e.preventDefault(); openLibFile(b.dataset.path, true); }
 });
-$('#aboutLine').textContent = `Markpad ${VERSION} · ${host.kind === 'browser' ? 'web' : host.kind}`;
+function showAbout(){
+  $('#aboutLine').textContent = `Markpad ${VERSION} · ${host.kind === 'browser' ? 'web' : host.kind}` +
+    (loadInfo ? ` · library: ${loadInfo.files.toLocaleString()} files in ${loadInfo.s.toFixed(1)} s` : '');
+}
+showAbout();
 // hidden "Don't count me": tap the version line 5 times. skipgc is GoatCounter's own skip flag (per device).
 { let taps = 0, timer;
   $('#aboutLine').addEventListener('click', () => {
@@ -2653,6 +2765,12 @@ cm = createEditor(pane, {
   },
 });
 view = cm.view;
+if (railsOn){
+  document.body.classList.add('rails');
+  makeRail(view.scrollDOM, () => heads.map(h => ({ y: lineY(h.line), t: h.t, n: h.n })));
+  makeRail(pv, () => [...pv.querySelectorAll('h1,h2,h3,h4,h5,h6')].map(e => ({ y: e.offsetTop, t: e.textContent, n: +e.tagName[1] })));
+  addEventListener('resize', railsSoon);
+}
 view.scrollDOM.addEventListener('scroll', () => {
   if (syncing === 'ed'){ syncing = null; } else if (scrollSrc === 'ed') syncScroll('ed');
   markOutline();

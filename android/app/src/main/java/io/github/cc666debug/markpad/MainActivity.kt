@@ -41,6 +41,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var frame: FrameLayout
     private val io = Executors.newSingleThreadExecutor()
     private val net = Executors.newSingleThreadExecutor()   // JotBird requests, so a slow network never holds up files
+    private val listing = Executors.newSingleThreadExecutor() // the file list, so a note can open while a big vault is still being read
+    private val lister = Executors.newFixedThreadPool(6)      // reading a picked folder: several of its folders at once
     private var pickerDone: ((Intent?) -> Unit)? = null
     private val picker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         val cb = pickerDone
@@ -141,12 +143,14 @@ class MainActivity : AppCompatActivity() {
                 "http" -> net.execute {
                     try { done(id, true, http(a)) } catch (e: Exception) { done(id, false, JSONObject.quote(e.message ?: e.toString())) }
                 }
+                "list" -> listing.execute {
+                    try { done(id, true, lib(a).list(a.optBoolean("all")).toString()) } catch (e: Exception) { done(id, false, JSONObject.quote(e.message ?: e.toString())) }
+                }
                 else -> run(id) {
                     when (method) {
                         "startupFile" -> startUri?.let { u -> startUri = null; looseFile(u) }
                         "readUri" -> JSONObject.quote(readUri(Uri.parse(a.getString("uri"))))
                         "writeUri" -> { writeUri(Uri.parse(a.getString("uri")), a.getString("text")); null }
-                        "list" -> lib(a).list(a.optBoolean("all")).toString()
                         "read" -> JSONObject.quote(lib(a).read(a.getString("path")))
                         "readB64" -> JSONObject.quote(lib(a).open(a.getString("path")).use { Base64.encodeToString(it.readBytes(), Base64.NO_WRAP) })
                         "backupZip" -> backupZip(a)
@@ -377,7 +381,7 @@ class MainActivity : AppCompatActivity() {
                 .sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() }))
             for (k in kids) {
                 if (k.isDirectory) out.put(JSONObject().put("name", k.name).put("path", pre + k.name).put("dir", true).put("children", walk(k, pre + k.name + "/", all)))
-                else if (all || shown.containsMatchIn(k.name)) out.put(JSONObject().put("name", k.name).put("path", pre + k.name).put("dir", false))
+                else if (all || shown.containsMatchIn(k.name)) out.put(JSONObject().put("name", k.name).put("path", pre + k.name).put("dir", false).put("mtime", k.lastModified()))
             }
             return out
         }
@@ -416,7 +420,7 @@ class MainActivity : AppCompatActivity() {
     // remembered per library, so opening and saving a note doesn't list its folder again.
     private val docIds = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.ConcurrentHashMap<String, String>>()
 
-    class Kid(val id: String, val name: String, val dir: Boolean)
+    class Kid(val id: String, val name: String, val dir: Boolean, val mtime: Long)
     inner class SafLib(private val tree: Uri) : Lib {
         private val cr = contentResolver
         private val rootId = DocumentsContract.getTreeDocumentId(tree)
@@ -428,10 +432,10 @@ class MainActivity : AppCompatActivity() {
             val out = ArrayList<Kid>()
             cr.query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, id), arrayOf(
                 DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, null)?.use { c ->
+                DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null)?.use { c ->
                 while (c.moveToNext()) {
                     val name = c.getString(1) ?: continue
-                    out.add(Kid(c.getString(0), name, c.getString(2) == DIR))
+                    out.add(Kid(c.getString(0), name, c.getString(2) == DIR, if (c.isNull(3)) 0L else c.getLong(3)))
                 }
             }
             return out
@@ -472,19 +476,33 @@ class MainActivity : AppCompatActivity() {
             return DocumentsContract.getDocumentId(u).also { ids[path] = it }
         }
 
-        private fun walk(id: String, pre: String, all: Boolean): JSONArray {
-            val out = JSONArray()
-            val ks = kids(id).filter { !skip(it.name, all) }
-                .sortedWith(compareBy<Kid>({ !it.dir }, { it.name.lowercase() }))
-            for (k in ks) {
-                val p = pre + k.name
-                ids[p] = k.id
-                if (k.dir) out.put(JSONObject().put("name", k.name).put("path", p).put("dir", true).put("children", walk(k.id, "$p/", all)))
-                else if (all || shown.containsMatchIn(k.name)) out.put(JSONObject().put("name", k.name).put("path", p).put("dir", false))
+        // Android answers each folder slowly, so the folders of one level are asked for together (up to 6 at once),
+        // then the next level; the tree is put together at the end
+        private fun walk(all: Boolean): JSONArray {
+            val kidsOf = HashMap<String, List<Kid>>()
+            var level = listOf(rootId to "")
+            while (level.isNotEmpty()) {
+                val got = lister.invokeAll(level.map { (id, _) -> java.util.concurrent.Callable { kids(id) } })
+                val next = ArrayList<Pair<String, String>>()
+                level.forEachIndexed { i, (id, pre) ->
+                    val ks = try { got[i].get() } catch (e: java.util.concurrent.ExecutionException) { throw e.cause ?: e }
+                    kidsOf[id] = ks.filter { !skip(it.name, all) }.sortedWith(compareBy<Kid>({ !it.dir }, { it.name.lowercase() }))
+                    for (k in kidsOf[id]!!) { ids[pre + k.name] = k.id; if (k.dir) next.add(k.id to "$pre${k.name}/") }
+                }
+                level = next
             }
-            return out
+            fun build(id: String, pre: String): JSONArray {
+                val out = JSONArray()
+                for (k in kidsOf[id] ?: emptyList()) {
+                    val p = pre + k.name
+                    if (k.dir) out.put(JSONObject().put("name", k.name).put("path", p).put("dir", true).put("children", build(k.id, "$p/")))
+                    else if (all || shown.containsMatchIn(k.name)) out.put(JSONObject().put("name", k.name).put("path", p).put("dir", false).put("mtime", k.mtime))
+                }
+                return out
+            }
+            return build(rootId, "")
         }
-        override fun list(all: Boolean): JSONArray { ids.clear(); return walk(rootId, "", all) }
+        override fun list(all: Boolean): JSONArray { ids.clear(); return walk(all) }
         override fun read(path: String) = readUri(uri(need(path)))
         override fun write(path: String, bytes: ByteArray) {
             val (d, n) = parentOf(path, true)
