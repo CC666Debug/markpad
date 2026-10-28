@@ -10,7 +10,7 @@ import { toPlain, toEpub, copyRich, noFront } from './export.js';
 import { host } from './host.js';
 import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.9.3';
+const VERSION = '2.9.4';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -1923,6 +1923,12 @@ const fb = $('#findBar'), F = id => fb.querySelector(id), fFind = F('#fFind'), f
 fb.remove();   // it only appears as the editor's search panel
 const opt = id => F(id).getAttribute('aria-pressed') === 'true';
 let findFrom = 0;
+// CodeMirror selects the whole Find box after every jump, so the next letter typed would replace it; keep the caret where it was
+function jump(dir){
+  const a = fFind.selectionStart, b = fFind.selectionEnd;
+  (dir < 0 ? findPrevious : findNext)(view);
+  if (document.activeElement === fFind) fFind.setSelectionRange(a, b);
+}
 function setQuery(){
   view.dispatch({ effects: setSearchQuery.of(new SearchQuery({
     search: fFind.value, replace: fRep.value, caseSensitive: opt('#fCase'), regexp: opt('#fRegex'),
@@ -1961,13 +1967,13 @@ const createFindPanel = () => ({
 fFind.addEventListener('input', () => {
   setQuery();
   view.dispatch({ selection: { anchor: findFrom } });
-  if (fFind.value) findNext(view);
+  if (fFind.value) jump(1);
   updateCount();
 });
 fRep.addEventListener('input', setQuery);
 fb.addEventListener('keydown', e => {
   if (e.key === 'Escape'){ e.preventDefault(); closeFind(); }
-  else if (e.key === 'Enter' && e.target === fFind){ e.preventDefault(); (e.shiftKey ? findPrevious : findNext)(view); updateCount(); }
+  else if (e.key === 'Enter' && e.target === fFind){ e.preventDefault(); jump(e.shiftKey ? -1 : 1); updateCount(); }
   else if (e.key === 'Enter' && e.target === fRep){ e.preventDefault(); e.ctrlKey || e.metaKey ? doReplaceAll() : doReplace(); }
 });
 function doReplace(){ replaceNext(view); updateCount(); fRep.focus(); }
