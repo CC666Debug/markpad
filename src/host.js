@@ -158,7 +158,8 @@ function browserHost(){
 
 /* ---------------- Desktop (Tauri: Windows + Linux) ---------------- */
 function desktopHost(){
-  const T = window.__TAURI__, invoke = T.core.invoke, dialog = T.dialog;
+  const T = window.__TAURI__, dialog = T.dialog;
+  const invoke = (cmd, args) => T.core.invoke(cmd, args).catch(e => { window.__mpLog?.(`${cmd}: ${e?.message || e}`, 'desktop'); throw e; });
   const name = p => p.split(/[\\/]/).pop();
   const MD = [{ name: 'Markdown', extensions: ['md', 'markdown', 'mdown', 'mkd', 'txt'] }];
   function lib(desc){
@@ -261,10 +262,11 @@ function androidHost(){
     const w = waiting[id]; if (!w) return;
     delete waiting[id];
     const v = json === '' ? null : JSON.parse(json);
+    if (!ok) window.__mpLog?.(`${w.method}: ${v || 'failed'}`, 'android');
     ok ? w.res(v) : w.rej(new Error(v || 'failed'));
   };
   const call = (method, args = {}) => new Promise((res, rej) => {
-    const id = ++seq; waiting[id] = { res, rej };
+    const id = ++seq; waiting[id] = { res, rej, method };
     A.call(id, method, JSON.stringify(args));
   });
   function lib(desc){
@@ -307,6 +309,10 @@ function androidHost(){
     bars: (dark, color) => call('bars', { dark, color }),
     pickZip: () => call('openZip'),
     onOpenFile(fn){ window.__mpOpenFile = r => fn({ name: r.name, ref: r.uri, text: r.text }); },
+    // text or a link sent here from another app's Share menu
+    startupShare: () => call('startupShare'),
+    onShare(fn){ window.__mpShare = fn; },
+    lastCrash: () => call('lastCrash'),
   };
 }
 

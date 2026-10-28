@@ -10,7 +10,7 @@ import { toPlain, toEpub, copyRich, noFront } from './export.js';
 import { host } from './host.js';
 import { publish, unpublish, listPages, claim, uploadImage, pageOf, daysLeft, leftText, withPage, pageText, titleOf as pageTitle, KEY_PAGE, getSettings, setSettings, PAGE_STYLES } from './jotbird.js';
 
-const VERSION = '2.9.4';
+const VERSION = '2.10.0';
 const $ = s => document.querySelector(s);
 const pv = $('#preview'), main = $('#main');
 const KEY = 'markpad.v1.';
@@ -47,7 +47,20 @@ const notice = msg => ask(msg, { buttons: [{ label: 'OK', value: true, primary: 
 function toast(msg){
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+  if (/fail|couldn['’]t|could not|can['’]t|error/i.test(msg)) logErr(msg, 'notice');
 }
+
+/* ---------------- Error log (▾ > Settings > Error log…) ---------------- */
+// Errors and failure notices are kept on this device (newest first, the last 200) so they can be copied and sent.
+function errList(){ try { return JSON.parse(store.get('errlog') || '[]'); } catch (_) { return []; } }
+function logErr(msg, where){
+  const list = errList();
+  list.unshift({ t: Date.now(), w: where || '', m: String(msg).slice(0, 3000) });
+  store.set('errlog', JSON.stringify(list.slice(0, 200)));
+}
+window.__mpLog = logErr;
+addEventListener('error', e => logErr(e.error?.stack || `${e.message} (${e.filename}:${e.lineno})`, 'error'));
+addEventListener('unhandledrejection', e => logErr(e.reason?.stack || e.reason?.message || String(e.reason), 'promise'));
 
 /* ---------------- Dialogs (no browser prompt/confirm, so they look the same in every edition) ---------------- */
 function ask(msg, { input = null, password = false, buttons = [{ label: 'Cancel', value: null }, { label: 'OK', value: true, primary: true }] } = {}){
@@ -175,6 +188,7 @@ async function openInTab(t, info, forceNew){
   await flush();
   stash();
   const tab = { cur: { kind: 'scratch', name: 'untitled.md', ...info }, dirty: false, state: cm.newState(t.replace(/\r\n?/g, '\n')), scroll: 0 };
+  snapshot(tab.cur, tab.state.doc.toString(), true);
   let i;
   const empty = cur.kind === 'scratch' && !view.state.doc.length;
   if (active >= 0 && !dirty && (empty || !newTabs && !forceNew)){ i = active; tabs[i] = tab; }
@@ -269,7 +283,9 @@ tabList.addEventListener('contextmenu', e => {
   const t = e.target.closest('.tab'); if (!t) return;
   e.preventDefault();
   const me = tabs[+t.dataset.i];
+  const c = tabs.indexOf(me) === active ? cur : me.cur;
   showCtx(e.clientX, e.clientY, [
+    ...(c.kind === 'lib' && lib ? [[isBookmarked(c.path) ? 'Remove bookmark' : 'Bookmark', () => toggleBookmark(c.path)]] : []),
     ['Close', () => closeTab(tabs.indexOf(me))],
     ['Close others', () => closeTabs(k => tabs[k] === me)],
     ['Close tabs to the right', () => closeTabs(k => k <= tabs.indexOf(me))],
@@ -309,12 +325,102 @@ function scheduleRender(){
   renderTimer = setTimeout(render, view.state.doc.length > 50000 ? 250 : 60);
 }
 function fillPreview(){
-  for (const img of pv.querySelectorAll('img[data-rel],img[data-wiki]')){
+  fillHtml(pv);
+  if (moveDone) foldDone(pv);
+}
+// what markdown() leaves for the app: pictures from the library, missing-note links, ![[embeds]] and diagrams.
+// Used by the Read view and by Live Preview's blocks (measure: tell the editor the block's height changed).
+function fillHtml(root, depth = 0, measure){
+  for (const img of root.querySelectorAll('img[data-rel],img[data-wiki]')){
     const src = img.dataset.wiki != null ? 'wiki:' + img.dataset.wiki : img.dataset.rel;
+    if (measure) img.onload = measure;
     resolveImage(src).then(u => { if (u) img.src = u; });
   }
-  for (const a of pv.querySelectorAll('a.wikilink')) a.classList.toggle('missing', !!lib && !resolveWiki(a.dataset.wiki));
-  if (moveDone) foldDone(pv);
+  for (const a of root.querySelectorAll('a.wikilink')) a.classList.toggle('missing', !!lib && !resolveWiki(a.dataset.wiki));
+  for (const box of root.querySelectorAll('.embed:not([data-done])')) fillEmbed(box, depth, measure);
+  drawDiagrams(root, measure);
+}
+
+/* ---------------- ![[Note]] embeds ---------------- */
+// the text of a note, unsaved changes included when it's open in a tab
+async function noteText(p){
+  if (cur.kind === 'lib' && cur.path === p) return text();
+  const t = tabs.find(t => t.cur.kind === 'lib' && t.cur.path === p);
+  return t ? t.state.doc.toString() : lib.fs.read(p);
+}
+// ![[Note#Heading]]: that heading and what's under it; ![[Note#^id]]: the paragraph ending in ^id
+function section(t, hash){
+  if (!hash) return t;
+  const lines = t.split('\n');
+  if (hash[0] === '^'){
+    const k = lines.findIndex(l => new RegExp('(^|\\s)\\^' + hash.slice(1).replace(/[^\w-]/g, '') + '\\s*$').test(l));
+    if (k < 0) return null;
+    let a = k, b = k;
+    while (a > 0 && lines[a - 1].trim()) a--;
+    while (b < lines.length - 1 && lines[b + 1].trim() && !/^\s*\^[\w-]+\s*$/.test(lines[b + 1])) b++;
+    return lines.slice(a, b + 1).join('\n').replace(/(^|\s)\^[\w-]+\s*$/gm, '');
+  }
+  let start = -1, lvl = 0, fence = false;
+  for (let i = 0; i < lines.length; i++){
+    if (FENCE_RE.test(lines[i])) fence = !fence;
+    const m = !fence && lines[i].match(H_RE);
+    if (!m) continue;
+    if (start < 0){ if (slug(m[2] || '') === slug(hash)){ start = i; lvl = m[1].length; } }
+    else if (m[1].length <= lvl) return lines.slice(start, i).join('\n');
+  }
+  return start < 0 ? null : lines.slice(start).join('\n');
+}
+async function fillEmbed(box, depth, measure){
+  box.dataset.done = '1';
+  const target = box.dataset.embed, hash = box.dataset.hash, p = lib && resolveWiki(target);
+  const name = (target.replace(/^.*\//, '') || cur.name.replace(/\.md$/i, '')) + (hash ? ' › ' + hash.replace(/^\^/, '') : '');
+  const head = `<a href="#" class="wikilink embed-head" data-wiki="${esc(target)}" data-hash="${hash && hash[0] !== '^' ? esc(slug(hash)) : ''}">${esc(name)}</a>`;
+  if (!p){ box.classList.add('missing'); box.innerHTML = head + `<div class="embed-miss">${lib ? 'Note not found' : 'Embeds work inside a library'}</div>`; return; }
+  if (depth >= 3){ box.innerHTML = head; return; }   // a note embedding itself (or a loop) stops here
+  let t = null;
+  try { t = section(await noteText(p), hash); } catch (_) {}
+  box.innerHTML = head + '<div class="embed-body"></div>';
+  const body = box.lastChild;
+  if (t == null) body.innerHTML = '<div class="embed-miss">That part of the note wasn’t found</div>';
+  else { body.innerHTML = markdown(t).replace(/ data-line="\d+"/g, '').replace(/ id="[^"]*"/g, ''); fillHtml(body, depth + 1, measure); }
+  measure?.();
+}
+
+/* ---------------- Mermaid diagrams ---------------- */
+// Mermaid is big (~3 MB), so it isn't built in: it loads from the web the first time a note has a diagram
+// (then the browser keeps a copy). Without internet the diagram's text stays, with a short note.
+const MERMAID = 'https://cdn.jsdelivr.net/npm/mermaid@12.2.0/dist/mermaid.esm.min.mjs';
+const loadModule = u => import(u);
+let mermaidP = null, mmN = 0;
+const svgCache = new Map();
+async function drawDiagrams(root, measure){
+  const boxes = [...root.querySelectorAll('.mermaid-box:not([data-drawn])')];
+  if (!boxes.length) return;
+  for (const b of boxes) b.dataset.drawn = '1';
+  let mm;
+  try { mm = await (mermaidP ||= loadModule(MERMAID).then(m => m.default)); }
+  catch (e){
+    mermaidP = null;
+    for (const b of boxes) b.insertAdjacentHTML('beforeend', '<div class="diagram-note">Diagrams need the internet the first time (Mermaid loads from cdn.jsdelivr.net)</div>');
+    return;
+  }
+  const theme = getComputedStyle(document.documentElement).colorScheme.includes('dark') ? 'dark' : 'default';
+  for (const b of boxes){
+    const key = theme + '\n' + b.dataset.src;
+    try {
+      if (!svgCache.has(key)){
+        mm.initialize({ startOnLoad: false, theme, securityLevel: 'strict' });
+        const id = 'mmd' + ++mmN;
+        try { svgCache.set(key, (await mm.render(id, b.dataset.src)).svg); }
+        finally { document.getElementById('d' + id)?.remove(); }
+        if (svgCache.size > 60) svgCache.delete(svgCache.keys().next().value);
+      }
+      b.innerHTML = svgCache.get(key); b.classList.add('drawn');
+    } catch (e){
+      b.insertAdjacentHTML('beforeend', `<div class="diagram-note">Diagram error: ${esc(String(e.message || e).split('\n')[0])}</div>`);
+    }
+  }
+  measure?.();
 }
 // Read view: the ticked items at the end of each checklist go under a "N checked items" fold (Keep-style)
 const openFolds = new Set();
@@ -442,6 +548,7 @@ async function save(saveAs, quiet){
       }
       await lib.fs.write(cur.path, t);
       cur.mtime = await lib.fs.mtime(cur.path).catch(() => 0);
+      snapshot(cur, t);
       if (sortMode.startsWith('mod')){ mtimes.set(cur.path, cur.mtime); renderTree(); }
       if ((!$('#tagPane').hidden || !$('#linkPane').hidden) && !$('#side').hidden){ const n = noteTexts.find(n => n.f.path === cur.path); if (n){ n.lines = t.split('\n'); if (!$('#tagPane').hidden) buildTags(); } }
       if (text() === t) setDirty(false);
@@ -449,7 +556,7 @@ async function save(saveAs, quiet){
       return;
     }
     if (!saveAs && cur.kind === 'loose' && cur.ref){
-      await host.writeRef(cur.ref, t); setDirty(false); toast('Saved'); return;
+      await host.writeRef(cur.ref, t); setDirty(false); snapshot(cur, t); toast('Saved'); return;
     }
     if (!saveAs && cur.kind === 'scratch' && lib){
       const name = await ask('Save as a note in ' + lib.desc.name, { input: (titleOf(t) || 'Untitled') });
@@ -741,6 +848,7 @@ function renderTree(){
   walk(tree, 0);
   $('#tree').innerHTML = rows.join('') || '<div class="empty">No notes yet. Press + to make one.</div>';
   markTree();
+  renderBookmarks();
 }
 function markTree(){
   for (const p of picked) if (!allFiles().some(f => f.path === p || f.path.startsWith(p + '/')) && !dirExists(p)) picked.delete(p);
@@ -912,7 +1020,8 @@ $('#tree').addEventListener('contextmenu', async e => {
   }
   if (picked.size && !picked.has(p)) clearPicks();
   const items = [
-    ...(isDir ? [] : [['Open in new tab', () => openLibFile(p, true)]]),
+    ...(isDir ? [] : [['Open in new tab', () => openLibFile(p, true)], [isBookmarked(p) ? 'Remove bookmark' : 'Bookmark', () => toggleBookmark(p)],
+      ['Note history…', async () => { if (!(cur.kind === 'lib' && cur.path === p)) await openLibFile(p); openHistory(); }]]),
     ['New note here', async () => { const n = await ask('New note', { input: 'Untitled' }); if (n) createNote(dir, n); }],
     ['New folder here', () => newFolder(dir)],
     ['Select', () => { picking = true; picked.add(p); pickAnchor = p; markTree(); }],
@@ -952,6 +1061,7 @@ async function movePath(p, to){
   if (inside(cur)) await flush();
   const relinks = await planRelinks(p, to);
   await lib.fs.rename(p, to);
+  moveBookmarks(p, to); histMove(p, to);
   stash();
   for (const t of tabs) if (inside(t.cur)){
     t.cur.path = to + t.cur.path.slice(p.length); t.cur.name = basename(t.cur.path);
@@ -1207,6 +1317,7 @@ async function trashPath(p, isDir, sure){
     if (active >= 0 && gone(tabs[active])) dirty = false;
     await closeTabs(k => !gone(tabs[k]));
     await lib.fs.trash(p);
+    moveBookmarks(p, null);
     await refreshTree(); toast('Moved to .trash');
     return true;
   } catch (e){ toast("Couldn't delete: " + (e.message || e)); }
@@ -1305,6 +1416,7 @@ function searchFilter(){
 }
 function qsFilter(){
   if (qsMode === 'search') return searchFilter();
+  if (qsMode === 'cmds') return cmdFilter();
   const q = $('#qsInput').value.trim().toLowerCase();
   const score = f => {
     const n = f.name.toLowerCase(), p = f.path.toLowerCase();
@@ -1323,6 +1435,7 @@ function qsFilter(){
 function qsPick(b, forceNew){
   if (b?.dataset.tag){ $('#qsInput').value = '#' + b.dataset.tag; qsFilter(); $('#qsInput').focus(); return; }
   $('#qs').hidden = true;
+  if (qsMode === 'cmds'){ if (b?.dataset.c) cmdHits[+b.dataset.c].run(); return; }
   if (!b || !b.dataset.k && !b.dataset.new) return;
   if (qsMode === 'link'){ insertNoteLink(b.dataset.new ? $('#qsInput').value.trim() : linkName(qsHits[+b.dataset.k].path)); return; }
   if (qsMode === 'search'){ const h = qsHits[+b.dataset.k]; openLibFile(h.f.path, forceNew).then(() => jumpToLine(h.line)); }
@@ -1911,6 +2024,7 @@ pv.addEventListener('click', e => {
   e.preventDefault();
   if (a.classList.contains('tag')) openSearch('#' + a.dataset.tag);
   else if (a.classList.contains('wikilink')) openWiki(a.dataset.wiki + (a.dataset.hash ? '#' + a.dataset.hash : ''), e.ctrlKey || e.metaKey);
+  else if (/^#fn(ref)?-\d+$/.test(a.getAttribute('href'))) pv.querySelector(a.getAttribute('href'))?.scrollIntoView({ block: 'center', behavior: 'smooth' });
   else openLink(a.getAttribute('href'));
 });
 pv.addEventListener('scroll', () => {
@@ -2132,6 +2246,9 @@ $('#bSave').addEventListener('click', () => save(false));
 $('#bSaveAs').addEventListener('click', closeMenu(() => save(true)));
 $('#bSwitcher').addEventListener('click', closeMenu(openSwitcher));
 $('#bSearch').addEventListener('click', closeMenu(() => openSearch()));
+$('#bCommands').addEventListener('click', closeMenu(openCommands));
+$('#bHistory').addEventListener('click', closeMenu(openHistory));
+$('#bErrLog').addEventListener('click', closeMenu(openErrLog));
 $('#bBackup').addEventListener('click', closeMenu(backupLibrary));
 $('#bRestore').addEventListener('click', closeMenu(restoreBackup));
 for (const [id, fmt] of [['#bExport', 'html'], ['#bDocx', 'docx'], ['#bPrint', 'print'], ['#bTxt', 'txt'], ['#bEpub', 'epub'], ['#bCopyRich', 'copy']])
@@ -2199,14 +2316,17 @@ document.addEventListener('keydown', e => {
     if (!ctx.hidden){ ctx.hidden = true; return; }
     if (menu.open){ menu.open = false; return; }
     if (!$('#jbDlg').hidden){ $('#jbDlg').hidden = true; return; }
+    if (!$('#sheet').hidden){ closeSheet(); return; }
     if (document.body.classList.contains('focus')){ setFocus(false); return; }
     if (searchPanelOpen(view.state)){ closeFind(); return; }
     if (picked.size){ clearPicks(); return; }
     if (window.innerWidth <= 700 && !$('#side').hidden){ toggleSide(false); return; }
     return;
   }
+  if (e.key === 'F1'){ e.preventDefault(); openCommands(); return; }
   if (!mod || e.altKey) return;
   const k = e.key.toLowerCase();
+  if (k === 'l' && e.shiftKey){ e.preventDefault(); openCommands(); return; }
   if (k === 'f' && e.shiftKey){ e.preventDefault(); setFocus(!document.body.classList.contains('focus')); }
   else if (k === 'f' || k === 'h'){ e.preventDefault(); openFind(k === 'h'); }
   else if (k === 'd' && e.shiftKey){ e.preventDefault(); todayNote(); }
@@ -2752,6 +2872,217 @@ for (const el of [document.querySelector('header'), $('#tabList')]){
   edges();
 }
 
+/* ---------------- A dialog with a title, any content and buttons (note history, error log) ---------------- */
+function sheet(title, html, buttons, wide){
+  $('#sheetTitle').textContent = title;
+  $('#sheetBody').innerHTML = html;
+  $('#sheet').classList.toggle('wide', !!wide);
+  const btns = $('#sheetBtns'); btns.innerHTML = '';
+  for (const b of buttons){
+    const el = document.createElement('button');
+    el.textContent = b.label; if (b.primary) el.className = 'primary'; if (b.id) el.id = b.id;
+    el.onclick = b.fn; btns.appendChild(el);
+  }
+  $('#sheet').hidden = false;
+  return $('#sheetBody');
+}
+const closeSheet = () => { $('#sheet').hidden = true; };
+$('#sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
+
+/* ---------------- Note history ---------------- */
+// Snapshots of each note, kept on this device (IndexedDB): the text it had when it was opened, then the
+// newest save of every 10 minutes, for 30 days (100 at most per note). ▾ > Note history… puts one back.
+const HIST_GAP = 10 * 60e3, HIST_KEEP = 30 * 864e5, HIST_MAX = 100;
+const histKey = c => c.kind === 'lib' && lib && c.path ? 'hist:' + lib.desc.id + ':' + c.path : c.kind === 'loose' && c.ref ? 'hist:file:' + c.ref : null;
+const kvDel = k => idb('readwrite', st => st.delete(k)).catch(() => {});
+let histQueue = Promise.resolve();
+function snapshot(c, t, opened){
+  const k = histKey(c);
+  if (!k) return;
+  histQueue = histQueue.then(async () => {
+    const now = Date.now();
+    let list = ((await kvGet(k)) || []).filter(x => now - x.t < HIST_KEEP);
+    if (list[0]?.text === t) return;
+    if (!opened && list[0] && !list[0].open && now - list[0].t < HIST_GAP) list[0] = { t: now, text: t };
+    else list.unshift({ t: now, text: t, ...(opened ? { open: true } : {}) });
+    await kvSet(k, list.slice(0, HIST_MAX));
+  }).catch(() => {});
+}
+// a renamed or moved note (or folder) takes its history along
+function histMove(from, to){
+  if (!lib) return;
+  const pre = 'hist:' + lib.desc.id + ':';
+  histQueue = histQueue.then(async () => {
+    const keys = await idb('readonly', st => st.getAllKeys());
+    for (const k of keys){
+      const p = typeof k === 'string' && k.startsWith(pre) ? k.slice(pre.length) : null;
+      if (p == null || !(p === from || p.startsWith(from + '/'))) continue;
+      await kvSet(pre + to + p.slice(from.length), await kvGet(k)); await kvDel(k);
+    }
+  }).catch(() => {});
+}
+function when(t){
+  const d = new Date(t), today = new Date().toDateString(), yest = new Date(Date.now() - 864e5).toDateString();
+  const hm = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return d.toDateString() === today ? 'Today ' + hm : d.toDateString() === yest ? 'Yesterday ' + hm : d.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ' ' + hm;
+}
+async function openHistory(){
+  const k = histKey(cur);
+  if (!k){ toast('History is kept for notes and files, not unsaved pages'); return; }
+  await histQueue;
+  const list = (await kvGet(k)) || [], now = text();
+  if (!list.length){ sheet('Note history', '<p>No history yet. Markpad keeps a copy each time this note opens and every 10 minutes while you save.</p>', [{ label: 'Close', fn: closeSheet, primary: true }]); return; }
+  let on = 0;
+  const body = sheet('History of ' + cur.name.replace(/\.md$/i, ''), `<div class="hist"><div class="hlist">${list.map((x, i) => {
+    const d = x.text.length - now.length;
+    return `<button data-i="${i}"${i ? '' : ' class="on"'}>${when(x.t)}<small>${x.open ? 'when opened · ' : ''}${x.text === now ? 'same as now' : (d >= 0 ? '+' : '−') + Math.abs(d).toLocaleString() + ' chars vs now'}</small></button>`;
+  }).join('')}</div><pre class="hview"></pre></div><p class="sub">Lines in red aren’t in the note now. Restore can be undone with Ctrl+Z.</p>`, [
+    { label: 'Close', fn: closeSheet },
+    { label: 'Copy', fn: () => navigator.clipboard.writeText(list[on].text).then(() => toast('Copied'), () => toast("Couldn't copy")) },
+    { label: 'Restore this version', primary: true, fn: () => {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: list[on].text }, userEvent: 'input' });
+      closeSheet(); toast('Restored · Ctrl+Z undoes it');
+    } },
+  ], true);
+  const nowLines = new Set(now.split('\n'));
+  const show = i => {
+    on = i;
+    body.querySelectorAll('.hlist button').forEach(b => b.classList.toggle('on', +b.dataset.i === i));
+    body.querySelector('.hview').innerHTML = list[i].text.split('\n').map(l => nowLines.has(l) ? esc(l) : `<span class="gone">${esc(l) || ' '}</span>`).join('\n');
+  };
+  body.querySelector('.hlist').addEventListener('click', e => { const b = e.target.closest('button'); if (b) show(+b.dataset.i); });
+  show(0);
+}
+
+/* ---------------- Bookmarks ---------------- */
+// Pinned notes at the top of the Files tab: per library, kept on this device.
+const bookmarks = () => { try { return lib ? JSON.parse(store.get('bm.' + lib.desc.id) || '[]') : []; } catch (_) { return []; } };
+function setBookmarks(list){ if (lib){ store.set('bm.' + lib.desc.id, JSON.stringify(list)); renderBookmarks(); } }
+const isBookmarked = p => bookmarks().includes(p);
+function toggleBookmark(p){
+  const list = bookmarks(), had = list.includes(p);
+  setBookmarks(had ? list.filter(x => x !== p) : [...list, p]);
+  toast(had ? 'Bookmark removed' : 'Bookmarked');
+}
+// to = null: deleted
+function moveBookmarks(from, to){
+  const list = bookmarks(), inside = p => p === from || p.startsWith(from + '/');
+  if (list.some(inside)) setBookmarks(list.flatMap(p => !inside(p) ? [p] : to == null ? [] : [to + p.slice(from.length)]));
+}
+function renderBookmarks(){
+  const list = bookmarks(), box = $('#bmBox');
+  box.hidden = !list.length;
+  const have = new Set(allFiles().map(f => f.path));
+  box.innerHTML = list.length ? '<div class="bmhead">★ Bookmarks</div>' + list.map(p =>
+    `<button class="bm${have.has(p) ? '' : ' missing'}${cur.kind === 'lib' && cur.path === p ? ' on' : ''}" data-path="${esc(p)}" title="${esc(p)}">${esc(basename(p).replace(/\.md$/i, ''))}</button>`).join('') : '';
+}
+$('#bmBox').addEventListener('click', e => { const b = e.target.closest('.bm'); if (b) openLibFile(b.dataset.path, e.ctrlKey || e.metaKey); });
+$('#bmBox').addEventListener('contextmenu', e => {
+  const b = e.target.closest('.bm'); if (!b) return;
+  e.preventDefault();
+  const p = b.dataset.path, list = bookmarks(), i = list.indexOf(p);
+  const swap = j => () => { const l = [...list]; [l[i], l[j]] = [l[j], l[i]]; setBookmarks(l); };
+  showCtx(e.clientX, e.clientY, [
+    ['Open in new tab', () => openLibFile(p, true)],
+    ...(i > 0 ? [['Move up', swap(i - 1)]] : []),
+    ...(i < list.length - 1 ? [['Move down', swap(i + 1)]] : []),
+    ['Remove bookmark', () => toggleBookmark(p)],
+  ]);
+});
+
+/* ---------------- Commands (F1, Ctrl+Shift+L, or ▾ > Commands…) ---------------- */
+// Every toolbar button and menu item by name, so nothing has to be hunted for. Built from the page itself,
+// so new buttons show up here without a list to keep.
+let cmdHits = [];
+const SECTION = { pDaily: 'Daily note', pExport: 'Export', pSettings: 'Settings', pChecklists: 'Checklists', pBackup: 'Backup' };
+function commandList(){
+  const out = [], seen = new Set();
+  const add = (label, run, key = '', state = '') => { label = label.replace(/\s+/g, ' ').trim(); if (label && !seen.has(label)){ seen.add(label); out.push({ label, run, key, state }); } };
+  const split = t => { const m = (t || '').match(/^(.*?)\s*\(([^)]*(?:Ctrl|F\d)[^)]*)\)\s*$/); return m ? [m[1], m[2]] : [t || '', '']; };
+  const onOff = b => b.classList.contains('tog') && b.hasAttribute('aria-pressed') ? (b.getAttribute('aria-pressed') === 'true' ? 'on' : 'off') : '';
+  for (const b of document.querySelectorAll('header > button, header .fmt button')){
+    if (b.hidden || b.id === 'bTheme') continue;
+    const [l, k] = split(b.title);
+    add(l, () => b.click(), k, b.id === 'bFind' ? '' : onOff(b));
+  }
+  for (const b of document.querySelectorAll('header .seg[aria-label="View"] button')) add('View: ' + b.title.split(':')[0], () => b.click());
+  add('Light / dark', () => $('#bTheme').click());
+  add('Theme colors…', openThemes);
+  for (const b of menu.querySelectorAll('.menu-list button')){
+    if (b.hidden || b.classList.contains('has-sub') || b.classList.contains('back') || b.id === 'bCommands' || b.closest('#pRecent')) continue;
+    const panel = b.closest('.panel'), key = b.querySelector('.key')?.textContent || '';
+    const label = [...b.childNodes].filter(n => !(n.classList && n.classList.contains('key'))).map(n => n.textContent).join('');
+    add((panel && SECTION[panel.id] ? SECTION[panel.id] + ': ' : '') + label, () => b.click(), key, onOff(b));
+  }
+  if (cur.kind === 'lib' && lib) add(isBookmarked(cur.path) ? 'Remove bookmark' : 'Bookmark this note', () => toggleBookmark(cur.path));
+  add('New folder', () => lib ? newFolder() : toast('Pick a library first'));
+  add('Toggle sidebar', () => toggleSide(), 'Ctrl+\\');
+  add('Show Outline', () => { toggleSide(true); showTab('outline'); }, 'Ctrl+Shift+O');
+  add('New tab', newTab, 'Ctrl+T');
+  add('Close tab', () => closeTab(active), 'Ctrl+W');
+  return out;
+}
+function openCommands(){
+  qsMode = 'cmds'; $('#qsInput').placeholder = 'Type a command…';
+  cmdAll = commandList();
+  $('#qs').hidden = false; $('#qsInput').value = ''; qsFilter(); $('#qsInput').focus();
+}
+let cmdAll = [];
+function cmdFilter(){
+  const words = $('#qsInput').value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  cmdHits = cmdAll.filter(c => words.every(w => c.label.toLowerCase().includes(w)));
+  if (words.length) cmdHits.sort((a, b) => +!a.label.toLowerCase().startsWith(words[0]) - +!b.label.toLowerCase().startsWith(words[0]));
+  qsOn = 0;
+  $('#qsList').innerHTML = cmdHits.map((c, k) => `<button data-c="${k}"${k ? '' : ' class="on"'}>${esc(c.label)}${c.state ? ` <span class="cstate ${c.state}">${c.state}</span>` : ''}<small>${esc(c.key)}</small></button>`).join('')
+    || '<div class="empty">No command by that name</div>';
+}
+
+/* ---------------- Share into Markpad (Android's Share menu) ---------------- */
+// Text or a web link shared from another app lands in a note: the open one, today's note, or a new one.
+function sharedMarkdown({ text = '', subject = '' }){
+  text = String(text).trim(); subject = String(subject).trim();
+  if (/^https?:\/\/\S+$/.test(text) && subject && subject !== text) return `[${subject.replace(/[[\]]/g, '')}](${text})`;
+  return text;
+}
+async function receiveShare(s){
+  const md = sharedMarkdown(s || {});
+  if (!md) return;
+  const here = cur.kind !== 'scratch' || view.state.doc.length;
+  const where = await ask('Add what was shared to a note?\n\n' + (md.length > 240 ? md.slice(0, 240) + '…' : md), { buttons: [
+    { label: 'Cancel', value: null },
+    ...(here ? [{ label: 'This note', value: 'here' }] : []),
+    ...(lib ? [{ label: 'Today’s note', value: 'today' }] : []),
+    { label: 'New note', value: 'new', primary: true },
+  ] });
+  if (!where) return;
+  if (where === 'today') await todayNote();
+  else if (where === 'new'){
+    const name = (s.subject || md.split('\n')[0].replace(/^#+\s*|https?:\/\/|[[\]()*_`>#]/g, '') || 'Shared').trim().slice(0, 60) || 'Shared';
+    if (lib){ if (!(await flush())) return; await createNote(selectedDir(), name); }
+    else await openInTab('', { kind: 'scratch', name: name + '.md' }, true);
+  }
+  // at the end, a blank line apart
+  const doc = view.state.doc, end = doc.length, tail = doc.sliceString(Math.max(0, end - 2), end);
+  const sep = !end ? '' : tail.endsWith('\n\n') ? '' : tail.endsWith('\n') ? '\n' : '\n\n';
+  replaceRange(end, end, sep + md + '\n', end + sep.length + md.length + 1);
+  toast('Added to ' + cur.name.replace(/\.md$/i, ''));
+}
+
+/* ---------------- Error log dialog ---------------- */
+function openErrLog(){
+  const list = errList();
+  const txt = () => list.map(e => `${new Date(e.t).toLocaleString()}  [${e.w}]  ${e.m}`).join('\n\n');
+  sheet('Error log', list.length
+    ? `<p class="sub">Newest first, kept on this device only. Copy puts it on the clipboard to paste into a message.</p><pre class="errlog">${esc(txt())}</pre>`
+    : '<p>No errors so far.</p>', [
+    ...(list.length ? [
+      { label: 'Clear', fn: () => { store.set('errlog', '[]'); closeSheet(); toast('Error log cleared'); } },
+      { label: 'Copy', fn: () => navigator.clipboard.writeText(`Markpad ${VERSION} · ${host.kind} · ${navigator.userAgent}\n\n` + txt()).then(() => toast('Copied'), () => toast('Copy did not work')) },
+    ] : []),
+    { label: 'Close', fn: closeSheet, primary: true },
+  ], true);
+}
+
 /* ---------------- Boot ---------------- */
 cm = createEditor(pane, {
   command: name => FORMATS[name](),
@@ -2764,6 +3095,7 @@ cm = createEditor(pane, {
   openWiki,
   openTag: tag => openSearch('#' + tag),
   keepGroups: () => moveDone,
+  fillBlock: (el, measure) => fillHtml(el, 0, measure),
   onUpdate(u){
     if (u.docChanged && !loading){ scrollSrc = 'ed'; if (!dirty) setDirty(true); else { saveSession(); if (autosave && cur.kind === 'lib'){ clearTimeout(saveTimer); saveTimer = setTimeout(() => save(false, true), 1200); } } scheduleRender(); }
     if (u.selectionSet || u.docChanged) updateCursor();
@@ -2797,6 +3129,7 @@ if (host.onDropPaths) host.onDropPaths(async paths => {
     await openInTab(await host.readRef(p), { kind: 'loose', name, ref: p }); addRecent({ name, ref: p });
   } catch (e){ toast('Could not open: ' + (e.message || e)); }
 });
+host.onShare?.(receiveShare);
 if (host.onOpenFile) host.onOpenFile(async f => { await openInTab(f.text, { kind: 'loose', name: f.name, ref: f.ref }, true); addRecent({ name: f.name, ref: f.ref }); });
 
 (async () => {
@@ -2837,6 +3170,10 @@ if (host.onOpenFile) host.onOpenFile(async f => { await openInTab(f.text, { kind
   useTab(Math.min(Math.max(sess?.active ?? 0, 0), tabs.length - 1));
   const start = await host.startupFile().catch(() => null);
   if (start){ await openInTab(start.text, { kind: 'loose', name: start.name, ref: start.ref }, true); addRecent({ name: start.name, ref: start.ref }); }
+  const crash = await host.lastCrash?.().catch(() => null);
+  if (crash) logErr(crash, 'android crash');
+  const shared = await host.startupShare?.().catch(() => null);
+  if (shared) receiveShare(shared);
   updateCursor();
   view.focus();
 })();
@@ -2846,6 +3183,7 @@ window.__mpBack = () => {
   if (!$('#ask').hidden){ $('#ask').hidden = true; return true; }
   if (!$('#qs').hidden){ $('#qs').hidden = true; return true; }
   if (!$('#jbDlg').hidden){ $('#jbDlg').hidden = true; return true; }
+  if (!$('#sheet').hidden){ closeSheet(); return true; }
   if (!ctxSub.hidden){ ctxSub.hidden = true; return true; }
   if (panels.some(p => !p.hidden)){ closePanels(); return true; }
   if (!ctx.hidden){ ctx.hidden = true; return true; }

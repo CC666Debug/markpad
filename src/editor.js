@@ -7,7 +7,7 @@ import { markdownLanguage, markdownKeymap } from '@codemirror/lang-markdown';
 import { syntaxHighlighting, HighlightStyle, syntaxTree, indentUnit, Language, LanguageSupport } from '@codemirror/language';
 import { search } from '@codemirror/search';
 import { tags as t, Tag } from '@lezer/highlight';
-import { IMG_EXT, markdown as toHtml } from './md.js';
+import { IMG_EXT, markdown as toHtml, tex, CALLOUT_RE } from './md.js';
 
 /* ---------------- Extra syntax: ==highlight== and [[wiki links]] ---------------- */
 const markTag = Tag.define(), wikiTag = Tag.define(), hashTag = Tag.define();
@@ -112,38 +112,68 @@ class CheckWidget extends WidgetType {
   }
   ignoreEvent(){ return true; }
 }
+class MathWidget extends WidgetType {
+  constructor(src){ super(); this.src = src; }
+  eq(o){ return o.src === this.src; }
+  toDOM(){ const s = document.createElement('span'); s.className = 'cm-lp-math'; s.innerHTML = tex(this.src, false); return s; }
+  ignoreEvent(){ return false; }
+}
 class TextWidget extends WidgetType {
   constructor(text, cls){ super(); this.text = text; this.cls = cls; }
   eq(o){ return o.text === this.text && o.cls === this.cls; }
   toDOM(){ const s = document.createElement('span'); s.className = this.cls; s.textContent = this.text; return s; }
 }
 
-// Tables span several lines, and CodeMirror only lets those be replaced from a state field.
-class TableWidget extends WidgetType {
-  constructor(src){ super(); this.src = src; }
+// Tables, callouts, $$math$$, Mermaid diagrams and ![[note embeds]] span several lines (or become
+// blocks), and CodeMirror only lets those be replaced from a state field. They show rendered until
+// the cursor goes into them.
+class BlockWidget extends WidgetType {
+  constructor(src, cls, fill){ super(); this.src = src; this.cls = cls; this.fill = fill; }
   eq(o){ return o.src === this.src; }
-  toDOM(){
+  toDOM(view){
     const d = document.createElement('div');
-    d.className = 'cm-lp-table md';
-    d.innerHTML = toHtml(this.src);
+    d.className = 'cm-lp-block ' + this.cls + ' md';
+    d.innerHTML = toHtml(this.src).replace(/ data-line="\d+"/g, '');
+    this.fill?.(d, () => view.requestMeasure());
     return d;
   }
   ignoreEvent(){ return false; }
 }
-function tableDecos(state){
+function blockDecos(state, fill){
   const out = [], doc = state.doc, sel = state.selection.ranges;
-  syntaxTree(state).iterate({ enter: n => {
-    if (n.name !== 'Table') return n.name === 'Document' || n.name === 'Blockquote' || n.name === 'ListItem' || /List$/.test(n.name) ? undefined : false;
+  const add = (n, cls) => {
     const from = doc.lineAt(n.from).from, to = doc.lineAt(n.to).to;
     if (sel.some(r => r.to >= from && r.from <= to)) return false;
-    out.push(Decoration.replace({ widget: new TableWidget(doc.sliceString(from, to)), block: true }).range(from, to));
+    out.push(Decoration.replace({ widget: new BlockWidget(doc.sliceString(from, to), cls, fill), block: true }).range(from, to));
     return false;
+  };
+  syntaxTree(state).iterate({ enter: n => {
+    switch (n.name){
+      case 'Table': return add(n, 'cm-lp-table');
+      case 'Blockquote': {
+        // only a callout's first line says so: > [!note]
+        const first = doc.lineAt(n.from).text.replace(/^\s*>\s?/, '');
+        return CALLOUT_RE.test(first) ? add(n, 'cm-lp-callout') : undefined;
+      }
+      case 'FencedCode': {
+        const info = n.node.getChild('CodeInfo');
+        return info && doc.sliceString(info.from, info.to).toLowerCase() === 'mermaid' ? add(n, 'cm-lp-diagram') : false;
+      }
+      case 'Paragraph': {
+        const t = doc.sliceString(n.from, n.to).trim();
+        if (/^\$\$[\s\S]*\$\$$/.test(t) && t.length > 4) return add(n, 'cm-lp-mathblock');
+        const e = /^!\[\[([^\]|#]+)[^\]]*\]\]$/.exec(t);
+        if (e && !IMG_EXT.test(e[1].trim())) return add(n, 'cm-lp-embed');
+        return false;
+      }
+    }
+    return n.name === 'Document' || n.name === 'ListItem' || /List$/.test(n.name) ? undefined : false;
   } });
   return Decoration.set(out);
 }
-const liveTables = StateField.define({
-  create: tableDecos,
-  update: (v, tr) => tr.docChanged || tr.selection || syntaxTree(tr.startState) !== syntaxTree(tr.state) ? tableDecos(tr.state) : v,
+const liveBlocks = fill => StateField.define({
+  create: state => blockDecos(state, fill),
+  update: (v, tr) => tr.docChanged || tr.selection || syntaxTree(tr.startState) !== syntaxTree(tr.state) ? blockDecos(tr.state, fill) : v,
   provide: f => EditorView.decorations.from(f),
 });
 
@@ -233,10 +263,35 @@ function buildLive(view, opts, cache){
   const kid = (n, name) => { for (let c = n.firstChild; c; c = c.nextSibling) if (c.name === name) return c; return null; };
   const kids = (n, name) => { const out = []; for (let c = n.firstChild; c; c = c.nextSibling) if (c.name === name) out.push(c); return out; };
   const spaceAfter = p => doc.sliceString(p, p + 1) === ' ' ? p + 1 : p;
+  // $math$ and [^footnotes] aren't in the Markdown parser, so they are found line by line (not inside code)
+  const maths = [];
+  const inCode = p => { for (let x = syntaxTree(state).resolveInner(p, 1); x; x = x.parent) if (/^(InlineCode|FencedCode|CodeBlock|CodeText)$/.test(x.name)) return true; return false; };
+  for (const { from, to } of view.visibleRanges){
+    for (let l = doc.lineAt(from).number; l <= doc.lineAt(to).number; l++){
+      const line = doc.line(l);
+      if (/^\s*\$\$/.test(line.text)) continue;
+      for (const m of line.text.matchAll(/(^|[^\\$\w])\$(?=\S)([^$\n]*?[^\s\\])\$(?![\d$\w])/g)){
+        const a = line.from + m.index + m[1].length, b = a + m[2].length + 2;
+        if (inCode(a)) continue;
+        maths.push([a, b]);
+        if (!active.has(l)) widget(a, b, new MathWidget(m[2]));
+        else mark(a, b, null, 'cm-lp-mathsrc');
+      }
+      for (const m of line.text.matchAll(/\^\[[^\]]+\]/g)){ const a = line.from + m.index; if (!inCode(a)) mark(a, a + m[0].length, null, 'cm-lp-fn'); }
+      for (const m of line.text.matchAll(/\[\^[^\]\s]+\]/g)){
+        const a = line.from + m.index;
+        const isDef = /^\s{0,3}$/.test(line.text.slice(0, m.index)) && line.text[m.index + m[0].length] === ':';
+        if (!isDef && !inCode(a)) mark(a, a + m[0].length, null, 'cm-lp-fn');
+      }
+    }
+  }
+  // a node partly inside some math (an _ inside $a_b$) is left alone; one around the math is fine
+  const inMath = (a, b) => maths.some(([x, y]) => a < y && b > x && !(a <= x && b >= y));
 
   for (const { from, to } of view.visibleRanges){
     syntaxTree(state).iterate({ from, to, enter: ref => {
       const n = ref.node, name = n.name;
+      if (maths.length && inMath(n.from, n.to)) return false;
       const h = /^(?:ATX|Setext)Heading(\d)$/.exec(name);
       if (h){
         const setext = name[0] === 'S';
@@ -362,11 +417,11 @@ function livePreview(opts){
     decorations: v => v.decorations,
     eventHandlers: {
       mousedown(e){
-        const a = e.target.closest && e.target.closest('.cm-lp-link, .cm-lp-tag');
+        const a = e.target.closest && e.target.closest('.cm-lp-link, .cm-lp-tag, .cm-lp-block a.wikilink');
         if (!a || e.button !== 0 || e.shiftKey) return false;
         e.preventDefault();
         if (a.dataset.tag != null) opts.openTag(a.dataset.tag);
-        else if (a.dataset.wiki != null) opts.openWiki(a.dataset.wiki, e.ctrlKey || e.metaKey);
+        else if (a.dataset.wiki != null) opts.openWiki(a.dataset.wiki + (a.dataset.hash ? '#' + a.dataset.hash : ''), e.ctrlKey || e.metaKey);
         else opts.openLink(a.dataset.href);
         return true;
       },
@@ -411,12 +466,13 @@ export function createEditor(parent, opts){
   const view = new EditorView({ state: EditorState.create({ doc: '', extensions }), parent });
   let liveOn = false;
   const groups = checkedGroups(() => !!opts.keepGroups?.());
+  const blocks = liveBlocks(opts.fillBlock);
   const ed = {
     view,
     setLive(on){
       liveOn = on;
       // the cm-live class (reading font, heading sizes) must come through CodeMirror, which owns the editor's classes
-      view.dispatch({ effects: live.reconfigure(on ? [livePreview(opts), liveTables, groups, EditorView.editorAttributes.of({ class: 'cm-live' })] : []) });
+      view.dispatch({ effects: live.reconfigure(on ? [livePreview(opts), blocks, groups, EditorView.editorAttributes.of({ class: 'cm-live' })] : []) });
     },
     // redraw the "N checked items" folds (after the Keep option changes)
     regroup(){ view.dispatch({ effects: regroup.of(null) }); },

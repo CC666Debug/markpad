@@ -288,6 +288,26 @@ body.dragging #dropHint{display:flex}
 /* dialogs */
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:flex-start;justify-content:center;padding-top:14vh;z-index:50}
 .modal[hidden]{display:none}
+#sheet h3{margin:0;font-size:16px}
+#sheet .sub{margin:0;color:var(--muted);font-size:12.5px}
+#sheet.wide .box{width:min(820px,94vw)}
+#sheetBody{display:flex;flex-direction:column;gap:8px;min-height:0}
+.hist{display:flex;gap:10px;height:min(56vh,520px)}
+.hist .hlist{width:210px;flex:none;overflow:auto;display:flex;flex-direction:column;gap:2px}
+.hist .hlist button{display:flex;flex-direction:column;align-items:flex-start;height:auto;padding:6px 8px;text-align:left;border-radius:6px}
+.hist .hlist button small{color:var(--muted);font-size:11.5px}
+.hist .hlist button.on{background:var(--hover);color:var(--text)}
+.hist .hview,.errlog{flex:1;margin:0;overflow:auto;background:var(--code-bg);border-radius:8px;padding:10px 12px;font:12.5px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.errlog{max-height:52vh}
+.hist .gone{background:color-mix(in srgb,#d64545 22%,transparent)}
+@media (max-width:700px){.hist{flex-direction:column;height:62vh}.hist .hlist{width:auto;max-height:35%}}
+#bmBox{padding:2px 0 6px;margin-bottom:4px;border-bottom:1px solid var(--border)}
+#bmBox .bmhead{font-size:11.5px;color:var(--muted);padding:2px 8px}
+#bmBox .bm{display:block;width:100%;height:26px;text-align:left;padding:0 8px 0 22px;color:var(--muted);border-radius:5px;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#bmBox .bm.on{color:var(--text);background:var(--hover)}
+#bmBox .bm.missing{opacity:.5;text-decoration:line-through}
+#qsList .cstate{font-size:11px;padding:0 5px;border-radius:4px;border:1px solid var(--border);color:var(--muted);margin-left:6px}
+#qsList .cstate.on{color:var(--accent);border-color:var(--accent)}
 .modal .box{background:var(--bg);border:1px solid var(--border);border-radius:10px;box-shadow:0 16px 48px rgba(0,0,0,.3);width:min(480px,92vw);padding:16px;display:flex;flex-direction:column;gap:12px}
 .modal p{margin:0;line-height:1.5;white-space:pre-line}
 .modal input{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--border);border-radius:6px;height:34px;padding:0 10px;outline:0;width:100%}
@@ -325,6 +345,7 @@ body.focus .cm-scroller{font-size:17px!important}
   main[data-view="split"] #editPane{flex:1 1 50%!important;border-bottom:1px solid var(--border)}
   #divider{display:none!important}
   .cm-line{padding:0 16px!important}
+  .cm-lp-block.md{padding-left:16px;padding-right:16px}
   .cm-content{padding-top:16px!important}
   #preview{padding:16px 16px 60px}
   #side{position:absolute;top:0;bottom:0;left:0;width:min(300px,86vw);z-index:15;box-shadow:0 8px 24px rgba(0,0,0,.2)}
@@ -357,6 +378,35 @@ body.focus .cm-scroller{font-size:17px!important}
 .md pre{background:var(--code-bg);padding:14px 16px;border-radius:8px;overflow:auto;line-height:1.5}
 .md pre code{background:none;padding:0;font-size:.86em}
 .md blockquote{margin-left:0;padding:0 1em;color:var(--muted);border-left:4px solid var(--quote)}
+.md .callout{--c:#4a7fd8;border-left:3px solid var(--c);background:color-mix(in srgb,var(--c) 9%,transparent);border-radius:6px;padding:8px 12px;margin:0 0 1em}
+.md .c-tip{--c:#1aa39a}.md .c-ok{--c:#3a9b52}.md .c-warn{--c:#d9822b}.md .c-bad{--c:#d64545}.md .c-ex{--c:#8a63d2}.md .c-quote{--c:#8a8a8a}
+.md .callout-title{display:flex;gap:8px;align-items:baseline;font-weight:600;color:var(--c)}
+.md .callout-icon{width:1.1em;flex:none;text-align:center}
+.md details.callout>summary{cursor:pointer;list-style:none}
+.md details.callout>summary::-webkit-details-marker{display:none}
+.md details.callout>summary::after{content:"▸";margin-left:auto;font-size:.8em;transition:transform .12s}
+.md details.callout[open]>summary::after{transform:rotate(90deg)}
+.md .callout-body{margin-top:6px}
+.md .callout-body>:last-child,.md .embed-body>:last-child{margin-bottom:0}
+.md .math{overflow-x:auto;overflow-y:hidden;margin:0 0 1em;padding:2px 0}
+.md math{font-family:"Cambria Math","STIX Two Math","Latin Modern Math","Noto Sans Math",math}
+.md .math-err,.cm-lp-math .math-err{color:#d64545}
+.md sup.fn{line-height:0}
+.md sup.fn a{text-decoration:none;padding:0 1px}
+.md .footnotes{border-top:1px solid var(--border);margin-top:2em;padding-top:.4em;font-size:.88em;color:var(--muted)}
+.md .fn-back{text-decoration:none}
+.md .embed{display:block;border-left:3px solid var(--accent);padding:2px 0 2px 12px;margin:.3em 0}
+.md .embed-head{display:block;font-size:.8em;color:var(--muted);margin-bottom:4px;text-decoration:none}
+.md .embed-miss{color:var(--muted);font-style:italic;font-size:.9em}
+.md .mermaid-box{margin:0 0 1em;overflow-x:auto}
+.md .mermaid-box.drawn{text-align:center}
+.md .mermaid-box svg{max-width:100%;height:auto}
+.md .diagram-note{font-size:12px;color:var(--muted);margin-top:4px}
+.cm-lp-mathsrc{color:var(--muted)}
+.cm-lp-fn{font-size:.75em;vertical-align:super;color:var(--accent)}
+.cm-lp-block{padding:4px 0;cursor:text;font-size:15px}
+.cm-lp-block.md{max-width:none;margin:0;padding-left:28px;padding-right:28px}
+.cm-lp-block>:last-child{margin-bottom:0}
 .md ul,.md ol{padding-left:1.8em}.md li+li{margin-top:.2em}.md li>ul,.md li>ol{margin:.2em 0 0}
 .md ul.contains-task{list-style:none;padding-left:1.2em}
 .md li.task-item>input{margin:0 .45em 0 -1.2em;vertical-align:-.1em;cursor:pointer;accent-color:var(--accent)}
@@ -382,9 +432,11 @@ body.focus .cm-scroller{font-size:17px!important}
   <details class="menu" id="moreMenu">
     <summary title="More"><svg viewBox="0 0 24 24" width="16" height="16" style="stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round"><path d="M6 9l6 6 6-6"/></svg></summary>
     <div class="menu-list">
+      <button id="bCommands" title="Every button and menu item, by name">Commands…<span class="key">F1</span></button>
       <button id="bSaveAs">Save as…<span class="key">Ctrl+Shift+S</span></button>
       <button id="bSwitcher">Quick open…<span class="key">Ctrl+P</span></button>
       <button id="bSearch">Search in notes / #tags…<span class="key">Ctrl+Shift+P</span></button>
+      <button id="bHistory" title="Earlier versions of this note, kept on this device for 30 days">Note history…</button>
       <button class="has-sub" data-panel="pDaily">Daily note &amp; templates<span class="key">▸</span></button>
       <button class="has-sub" data-panel="pExport">Export<span class="key">▸</span></button>
       <button id="bJb" hidden title="Share this note as a web page (JotBird)">Publish…</button>
@@ -421,6 +473,7 @@ body.focus .cm-scroller{font-size:17px!important}
         <button id="bShowLinks" class="tog" aria-pressed="true" title="Links: the notes that link to the open one">Show Links tab</button>
         <button id="bShowPub" class="tog" aria-pressed="true" hidden>Show Published tab</button>
         <button id="bReadable" class="tog" aria-pressed="false" title="On: text stays in a comfortable column. Off: text fills the window.">Readable line length</button>
+        <button id="bErrLog" title="Errors Markpad ran into, to copy and send">Error log…</button>
       </div>
       <div class="panel" id="pRecent" hidden>
         <div id="recentBox"></div>
@@ -507,6 +560,7 @@ body.focus .cm-scroller{font-size:17px!important}
         <button id="bLibMenu" title="Switch library">⋯</button>
       </div>
       <div class="pickbar" id="pickBar" hidden><span id="pickCount"></span><button id="bPickExport">Export</button><button id="bPickMerge" title="Make one note out of the picked notes">Merge…</button><button id="bPickMove">Move…</button><button id="bPickDel" title="Move to .trash">Delete</button><button id="bPickClear" title="Clear selection (Esc)">✕</button></div>
+      <div id="bmBox" hidden></div>
       <div id="tree"></div>
       <div class="libempty" id="libEmpty"></div>
     </div>
@@ -541,6 +595,11 @@ body.focus .cm-scroller{font-size:17px!important}
   <h3 id="jbTitle"></h3>
   <div id="jbBody"></div>
   <div class="btns"><button id="jbCancel" hidden>Cancel</button><button class="primary" id="jbClose">Close</button></div>
+</div></div>
+<div class="modal" id="sheet" hidden><div class="box">
+  <h3 id="sheetTitle"></h3>
+  <div id="sheetBody"></div>
+  <div class="btns" id="sheetBtns"></div>
 </div></div>
 <div class="modal" id="qs" hidden><div class="box">
   <input id="qsInput" placeholder="Find or create a note…" spellcheck="false">
@@ -577,6 +636,7 @@ A small Markdown editor. It works offline, and your notes are plain `.md` files 
 | Sidebar / Outline | `Ctrl+\` / `Ctrl+Shift+O` |
 | Switch view | `Ctrl+/` |
 | Focus mode | `Ctrl+Shift+F` (Esc to leave) |
+| Every command by name | `F1` or `Ctrl+Shift+L` |
 
 ## What it supports
 
@@ -584,9 +644,15 @@ A small Markdown editor. It works offline, and your notes are plain `.md` files 
 - [x] Lists, nested lists, and task lists
   - Press Enter in a list and the next bullet appears for you
 - [ ] Click this checkbox to tick it off
-- [x] `[[Wiki links]]` between notes in a library, like Obsidian
+- [x] `[[Wiki links]]` between notes in a library, like Obsidian, and `![[Note]]` to show another note inside this one
+- [x] Footnotes[^1], math like $E = mc^2$, and Mermaid diagrams (a code block marked `mermaid`)
 
 > Blockquotes look like this.
+
+> [!tip] Callouts too
+> Write `> [!note]`, `> [!tip]`, `> [!warning]`… like in Obsidian. Add `-` after it to fold it shut.
+
+[^1]: Footnotes gather at the bottom of the page.
 
 ```js
 // Fenced code blocks

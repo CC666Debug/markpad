@@ -50,10 +50,18 @@ class MainActivity : AppCompatActivity() {
         cb?.invoke(if (r.resultCode == RESULT_OK) r.data else null)
     }
     private var startUri: Uri? = null
+    private var startShare: String? = null
     private val host = "appassets.androidplatform.net"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // a crash is written down, and the page puts it in its error log on the next start
+        val crashFile = File(filesDir, "crash.txt")
+        val before = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try { crashFile.writeText("Markpad crashed (${t.name}):\n" + android.util.Log.getStackTraceString(e)) } catch (_: Exception) {}
+            before?.uncaughtException(t, e)
+        }
         WindowCompat.setDecorFitsSystemWindows(window, false)
         web = WebView(this)
         // a WebView ignores its own padding, so the page sits in a padded frame instead
@@ -85,6 +93,7 @@ class MainActivity : AppCompatActivity() {
         }
         web.addJavascriptInterface(Bridge(), "MarkpadAndroid")
         startUri = viewUri(intent)
+        startShare = shared(intent)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 // let the page close a menu or the sidebar first
@@ -98,6 +107,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        shared(intent)?.let { o -> web.evaluateJavascript("window.__mpShare && window.__mpShare($o)", null); return }
         val u = viewUri(intent) ?: return
         io.execute {
             try {
@@ -109,6 +119,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun viewUri(i: Intent?): Uri? =
         if (i?.action == Intent.ACTION_VIEW || i?.action == Intent.ACTION_EDIT) i.data else null
+
+    // Share ▸ Markpad from another app: its text (or link) and subject, as JSON for the page
+    private fun shared(i: Intent?): String? {
+        if (i?.action != Intent.ACTION_SEND) return null
+        val text = i.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString() ?: return null
+        return JSONObject().put("text", text).put("subject", i.getStringExtra(Intent.EXTRA_SUBJECT) ?: "").toString()
+    }
 
     /* ---------------- the bridge ---------------- */
     inner class Bridge {
@@ -149,6 +166,8 @@ class MainActivity : AppCompatActivity() {
                 else -> run(id) {
                     when (method) {
                         "startupFile" -> startUri?.let { u -> startUri = null; looseFile(u) }
+                        "startupShare" -> startShare.also { startShare = null }
+                        "lastCrash" -> File(filesDir, "crash.txt").let { f -> if (f.exists()) JSONObject.quote(f.readText()).also { f.delete() } else null }
                         "readUri" -> JSONObject.quote(readUri(Uri.parse(a.getString("uri"))))
                         "writeUri" -> { writeUri(Uri.parse(a.getString("uri")), a.getString("text")); null }
                         "read" -> JSONObject.quote(lib(a).read(a.getString("path")))

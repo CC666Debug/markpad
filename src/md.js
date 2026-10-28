@@ -1,5 +1,7 @@
 // Markdown → HTML for the Read and Split views. Small on purpose: CommonMark-ish plus tables,
-// task lists, ==highlight==, reference links and Obsidian [[wiki links]].
+// task lists, ==highlight==, reference links, Obsidian [[wiki links]], ![[embeds]], > [!callouts],
+// footnotes and $math$ (Temml writes MathML, which browsers draw without extra fonts).
+import temml from 'temml';
 const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const LIST_RE = /^( *)([-*+]|\d{1,9}[.)])(?:[ \t]+(.*)|$)/;
 const HR_RE = /^ {0,3}([-*_])( *\1){2,} *$/;
@@ -12,6 +14,20 @@ const DEF_RE = /^ {0,3}\[([^\]]+)\]:[ \t]*(\S+)(?:[ \t]+"(.*)")?[ \t]*$/;
 // Obsidian-style #tags: letters, digits, _ - / (nested), at least one non-digit
 const TAG_RE = /(^|[\s(])#([\p{L}\p{N}_\-\/]*[\p{L}_\-\/][\p{L}\p{N}_\-\/]*)/gu;
 let refs = {};
+// footnotes: definitions by id, and the order they are first used in (that order numbers them)
+let fnDefs = {}, fnUsed = [];
+
+// $math$ and $$math$$ → MathML; a typo shows the TeX in red instead of breaking the note
+function tex(src, display){
+  try { return temml.renderToString(src, { displayMode: display, throwOnError: false }); }
+  catch (e){ return `<code class="math-err">${esc(src)}</code>`; }
+}
+// Obsidian callouts: > [!type] Title. Types share colors the way Obsidian groups them.
+const CALLOUT = { note: 'note', info: 'note', todo: 'note', abstract: 'tip', summary: 'tip', tldr: 'tip', tip: 'tip', hint: 'tip', important: 'tip',
+  success: 'ok', check: 'ok', done: 'ok', question: 'warn', help: 'warn', faq: 'warn', warning: 'warn', caution: 'warn', attention: 'warn',
+  failure: 'bad', fail: 'bad', missing: 'bad', danger: 'bad', error: 'bad', bug: 'bad', example: 'ex', quote: 'quote', cite: 'quote' };
+const CALLOUT_ICON = { note: '✎', tip: '✦', ok: '✓', warn: '!', bad: '✕', ex: '☰', quote: '❝' };
+const CALLOUT_RE = /^\[!([\w-]+)\]([+-]?)[ \t]*(.*)$/;
 
 const isTableStart = (lines,i) => lines[i].includes('|') && i+1 < lines.length && SEP_RE.test(lines[i+1]) && lines[i+1].includes('|');
 const startsBlock = l => FENCE_RE.test(l) || H_RE.test(l) || HR_RE.test(l) || QUOTE_RE.test(l) || /^ {0,3}([-*+]|1[.)])[ \t]+\S/.test(l);
@@ -40,7 +56,9 @@ function inline(s){
   const st = [];
   const put = h => '\u0000' + (st.push(h)-1) + '\u0000';
   s = s.replace(/(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g, (m,t,c) => put('<code>'+esc(c.replace(/^ ([\s\S]*) $/,'$1'))+'</code>'));
-  s = s.replace(/\\([\\`*_{}\[\]()#+\-.!~|<>=])/g, (m,c) => put(esc(c)));
+  s = s.replace(/\$\$([\s\S]+?)\$\$/g, (m,t) => put(tex(t, true)));
+  s = s.replace(/(^|[^\\$\w])\$(?=\S)([^$\n]*?[^\s\\])\$(?![\d$\w])/g, (m,p,t) => p + put(tex(t, false)));
+  s = s.replace(/\\([\\`*_{}\[\]()#+\-.!~|<>=$])/g, (m,c) => put(esc(c)));
   s = esc(s);
   s = s.replace(/(!?)\[\[([^\]|#]*)(#[^\]|]*)?(?:\|([^\]]*))?\]\]/g, (m,bang,target,hash,alias) => {
     target = target.trim();
@@ -48,8 +66,15 @@ function inline(s){
       const w = /^\d+$/.test(alias || '') ? ` width="${alias}"` : '';
       return put(`<img data-wiki="${target}" alt="${target}"${w} loading="lazy">`);
     }
+    // ![[Note]] / ![[Note#Heading]]: the app fills in the note's text later (it can read files, this can't)
+    if (bang) return put(`<span class="embed" data-embed="${target}" data-hash="${hash ? hash.slice(1) : ''}"></span>`);
     const label = alias || (target ? target.replace(/^.*\//, '') + (hash || '').replace('#', ' › ') : (hash || '').slice(1));
     return put(`<a href="#" class="wikilink" data-wiki="${target}" data-hash="${hash ? slug(hash.slice(1).replace(/&amp;/g,'&')) : ''}">`) + label + put('</a>');
+  });
+  // [^id] uses a footnote, ^[text] is one written in place
+  s = s.replace(/\^\[([^\]]+)\]|\[\^([^\]\s]+)\]/g, (m,t,id) => {
+    if (t != null){ id = '\u0001' + Object.keys(fnDefs).length; fnDefs[id] = t; }
+    return fnDefs[id] != null ? put(fnRef(id)) : m;
   });
   s = s.replace(/!\[([^\]]*)\]\(\s*(?:&lt;(.+?)&gt;|([^)\s]+))(?:\s+&quot;(.*?)&quot;)?\s*\)/g, (m,a,u1,u2,t) => put(img(u1 || u2, a, t)));
   s = s.replace(/\[([^\]]+)\]\(\s*([^)\s]*)(?:\s+&quot;(.*?)&quot;)?\s*\)/g,
@@ -78,6 +103,13 @@ function inline(s){
   return s;
 }
 
+function fnRef(id){
+  let n = fnUsed.indexOf(id);
+  const first = n < 0;
+  if (first){ fnUsed.push(id); n = fnUsed.length - 1; }
+  return `<sup class="fn"><a href="#fn-${n + 1}"${first ? ` id="fnref-${n + 1}"` : ''}>${n + 1}</a></sup>`;
+}
+
 function blocks(lines, tight, top){
   const out = []; let i = 0, m, mark = -1, markLine = 0;
   // top-level blocks get data-line="N" so scroll sync and the outline can find them
@@ -93,7 +125,17 @@ function blocks(lines, tight, top){
       const buf = []; i++;
       while (i < lines.length && !close.test(lines[i])) buf.push(lines[i++]);
       i++;
-      out.push('<pre><code' + (lang ? ' class="language-'+esc(lang)+'"' : '') + '>' + esc(buf.join('\n')) + '</code></pre>');
+      if (lang.toLowerCase() === 'mermaid') out.push(`<div class="mermaid-box" data-src="${esc(buf.join('\n'))}"><pre><code>${esc(buf.join('\n'))}</code></pre></div>`);
+      else out.push('<pre><code' + (lang ? ' class="language-'+esc(lang)+'"' : '') + '>' + esc(buf.join('\n')) + '</code></pre>');
+      continue;
+    }
+    if (/^ {0,3}\$\$/.test(line)){
+      const one = line.trim().slice(2);
+      if (one.trim().endsWith('$$')){ out.push(`<div class="math">${tex(one.trim().slice(0, -2), true)}</div>`); i++; continue; }
+      const buf = [one]; i++;
+      while (i < lines.length && !/\$\$\s*$/.test(lines[i])) buf.push(lines[i++]);
+      if (i < lines.length) buf.push(lines[i++].replace(/\$\$\s*$/, ''));
+      out.push(`<div class="math">${tex(buf.join('\n'), true)}</div>`);
       continue;
     }
     if ((m = line.match(H_RE))){
@@ -104,6 +146,16 @@ function blocks(lines, tight, top){
     if (QUOTE_RE.test(line)){
       const buf = [];
       while (i < lines.length && lines[i].trim() && (QUOTE_RE.test(lines[i]) || !startsBlock(lines[i]))) buf.push(lines[i++].replace(QUOTE_RE,''));
+      const c = buf[0].match(CALLOUT_RE);
+      if (c){
+        const type = c[1].toLowerCase(), kind = CALLOUT[type] || 'note';
+        const title = c[3] ? inline(c[3]) : esc(type[0].toUpperCase() + type.slice(1));
+        const head = `<span class="callout-icon">${CALLOUT_ICON[kind]}</span><span class="callout-text">${title}</span>`;
+        const body = buf.length > 1 ? `<div class="callout-body">${blocks(buf.slice(1), false)}</div>` : '';
+        out.push(c[2] ? `<details class="callout c-${kind}"${c[2] === '+' ? ' open' : ''}><summary class="callout-title">${head}</summary>${body}</details>`
+          : `<div class="callout c-${kind}"><div class="callout-title">${head}</div>${body}</div>`);
+        continue;
+      }
       out.push('<blockquote>' + blocks(buf,false) + '</blockquote>');
       continue;
     }
@@ -173,10 +225,21 @@ function blocks(lines, tight, top){
 }
 function markdown(src){
   const lines = src.replace(/\r\n?/g,'\n').split('\n').map(l => l.replace(/^\t+/, t => '    '.repeat(t.length)));
-  refs = {}; let inFence = false;
-  for (const l of lines){
+  refs = {}; fnDefs = {}; fnUsed = [];
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++){
+    const l = lines[i];
     if (FENCE_RE.test(l)) inFence = !inFence;
-    const m = !inFence && l.match(DEF_RE);
+    if (inFence) continue;
+    // [^id]: text (indented lines under it belong to it); its lines become blank so line numbers stay put
+    const f = l.match(/^ {0,3}\[\^([^\]\s]+)\]:[ \t]?(.*)$/);
+    if (f){
+      const body = [f[2]]; lines[i] = '';
+      while (i + 1 < lines.length && /^ {2,}\S/.test(lines[i + 1])){ body.push(lines[++i].trim()); lines[i] = ''; }
+      fnDefs[f[1]] = body.join(' ');
+      continue;
+    }
+    const m = l.match(DEF_RE);
     if (m) refs[esc(m[1]).toLowerCase()] = esc(m[2]);
   }
   // frontmatter (Obsidian's "properties") shows as a small grey box; its lines become blank so line numbers stay put
@@ -192,7 +255,12 @@ function markdown(src){
       for (let i = 0; i <= end; i++) lines[i] = '';
     }
   }
-  return props + blocks(lines, false, true);
+  const html = props + blocks(lines, false, true);
+  if (!fnUsed.length) return html;
+  // the notes at the bottom; one note can use another, so the list can grow while it is written
+  const notes = [];
+  for (let k = 0; k < fnUsed.length; k++) notes.push(`<li id="fn-${k + 1}">${inline(fnDefs[fnUsed[k]])} <a href="#fnref-${k + 1}" class="fn-back" title="Back">↩</a></li>`);
+  return html + `<section class="footnotes"><ol>${notes.join('')}</ol></section>`;
 }
 
-export { TAG_RE, markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, LIST_RE, IMG_EXT };
+export { TAG_RE, markdown, esc, slug, startsBlock, FENCE_RE, H_RE, DEF_RE, LIST_RE, IMG_EXT, tex, CALLOUT_RE };

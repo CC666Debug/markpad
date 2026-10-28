@@ -1,6 +1,6 @@
 {
   "name": "markpad",
-  "version": "2.9.4",
+  "version": "2.10.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -17,6 +17,7 @@
     "@lezer/highlight": "^1.2.5",
     "@lezer/markdown": "^1.8.0",
     "@tauri-apps/cli": "^2.12.2",
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "temml": "^0.14.0"
   }
 }

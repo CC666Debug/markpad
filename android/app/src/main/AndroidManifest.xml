@@ -29,6 +29,12 @@
                 <data android:mimeType="text/x-markdown" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
+            <!-- Share ▸ Markpad: text or a web link from another app goes into a note -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
         <!-- hands backup zips to the share menu -->
         <provider

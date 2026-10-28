@@ -20,6 +20,11 @@ Keep notes in a folder, or point it at an existing Obsidian vault.
 - Paste or drop images: saved into the library (following Obsidian's attachment setting), or kept inside the note when there's no library
 - Auto-save in a library, and it notices when Obsidian or sync changed a note
 - Export to HTML, print / PDF
+- Obsidian callouts (`> [!note]`), note embeds (`![[Note]]`, `![[Note#Heading]]`), footnotes, `$math$` (MathML, built in) and Mermaid diagrams (loaded from the web the first time)
+- Note history: earlier versions of each note, kept on the device for 30 days, with Restore
+- Bookmarks at the top of the file list; every command by name with F1 / Ctrl+Shift+L
+- Android: Share ▸ Markpad sends text or a link from any app into a note
+- Error log (▾ > Settings) to copy and send when something goes wrong
 
 ## Building
 
